@@ -59,13 +59,13 @@ class ALW_Shipping_Calculator {
 
         if ( $distance_km <= ALW_FREE_KM ) {
             $cost = 0;
-            $label = sprintf( 'Distance Shipping (Free — %.2f km)', $distance_km );
+            $label = sprintf( '(Free — %.2f km)', $distance_km );
         } elseif ( $distance_km > ALW_MAX_KM ) {
             // Beyond radius -> Return empty rates to block
             return array();
         } else {
             $cost = $bill_km * ALW_RATE_PER_KM;
-            $label = sprintf( 'Distance Shipping (%.2f km — %s)', $distance_km, strip_tags( wc_price( $cost ) ) );
+            $label = sprintf( '(%.2f km — %s)', $distance_km, strip_tags( wc_price( $cost ) ) );
         }
 
         // Return single custom rate
@@ -80,7 +80,22 @@ class ALW_Shipping_Calculator {
         $cust_lng = isset( $_POST['billing_lng'] ) ? floatval( wp_unslash( $_POST['billing_lng'] ) ) : 0;
         $cust_dist = isset( $_POST['billing_distance'] ) ? floatval( wp_unslash( $_POST['billing_distance'] ) ) : 0;
 
-        if ( empty( $cust_lat ) || empty( $cust_lng ) ) return;
+        if ( empty( $cust_lat ) || empty( $cust_lng ) ) {
+            // Fallback to Address Geocoding if map failed to provide coords natively
+            $billing_address = $this->get_posted_address();
+            if ( ! empty( $billing_address ) ) {
+                $coords = $this->geocode_address( $billing_address );
+                if ( $coords ) {
+                    $cust_lat = $coords['lat'];
+                    $cust_lng = $coords['lng'];
+                }
+            }
+        }
+
+        if ( empty( $cust_lat ) || empty( $cust_lng ) ) {
+            wc_add_notice( 'We could not pinpoint your delivery location. Please try placing the pin on the map or providing a more detailed address.', 'error' );
+            return;
+        }
 
         // Use the same logic priority
         if ( $cust_dist > 0 ) {
