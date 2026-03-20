@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Auto-Location for WooCommerce
  * Description: Calculates shipping based on distance with a dedicated settings panel.
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: Auto Computation
  * Author URI: https://autocomputation.com/
  * Text Domain: auto-location-woocommerce

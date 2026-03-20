@@ -31,13 +31,27 @@ class ALW_Admin_Settings {
     }
 
     public function register_settings() {
-        register_setting( 'alw_settings_group', 'alw_google_api_key' );
-        register_setting( 'alw_settings_group', 'alw_store_lat' );
-        register_setting( 'alw_settings_group', 'alw_store_lng' );
-        register_setting( 'alw_settings_group', 'alw_free_km' );
-        register_setting( 'alw_settings_group', 'alw_max_km' );
-        register_setting( 'alw_settings_group', 'alw_rate_per_km' );
-        register_setting( 'alw_settings_group', 'alw_round_method' );
+        register_setting( 'alw_settings_group', 'alw_google_api_key', array(
+            'sanitize_callback' => 'sanitize_text_field',
+        ));
+        register_setting( 'alw_settings_group', 'alw_store_lat', array(
+            'sanitize_callback' => array( $this, 'sanitize_latitude' ),
+        ));
+        register_setting( 'alw_settings_group', 'alw_store_lng', array(
+            'sanitize_callback' => array( $this, 'sanitize_longitude' ),
+        ));
+        register_setting( 'alw_settings_group', 'alw_free_km', array(
+            'sanitize_callback' => array( $this, 'sanitize_non_negative_float' ),
+        ));
+        register_setting( 'alw_settings_group', 'alw_max_km', array(
+            'sanitize_callback' => array( $this, 'sanitize_max_km' ),
+        ));
+        register_setting( 'alw_settings_group', 'alw_rate_per_km', array(
+            'sanitize_callback' => array( $this, 'sanitize_non_negative_float' ),
+        ));
+        register_setting( 'alw_settings_group', 'alw_round_method', array(
+            'sanitize_callback' => array( $this, 'sanitize_round_method' ),
+        ));
 
         add_settings_section( 'alw_general_section', 'General Configuration', null, 'alw_settings' );
         add_settings_section( 'alw_rules_section', 'Shipping Rules', null, 'alw_settings' );
@@ -55,8 +69,15 @@ class ALW_Admin_Settings {
     public function render_api_key_field( $args ) {
         $option = get_option( $args['id'] );
         ?>
-        <input type="text" name="<?php echo esc_attr( $args['id'] ); ?>" value="<?php echo esc_attr( $option ); ?>" class="regular-text" />
+        <input type="password" name="<?php echo esc_attr( $args['id'] ); ?>" value="<?php echo esc_attr( $option ); ?>" class="regular-text" autocomplete="off" />
         <p class="description">Required: Geocoding API, Maps JavaScript API, Places API, and Directions API.</p>
+
+        <div class="notice notice-warning inline" style="margin: 10px 0; padding: 8px 12px;">
+            <p><strong>&#9888;&#65039; Security:</strong> Restrict this API key in the
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>:
+            set <em>Application restrictions &rarr; HTTP referrers</em> to your domain,
+            and <em>API restrictions</em> to only Geocoding, Maps JS, Places, and Directions APIs.</p>
+        </div>
         
         <div class="alw-tutorial-box">
             <h3>How to get your Google Maps API Key</h3>
@@ -116,5 +137,49 @@ class ALW_Admin_Settings {
             </form>
         </div>
         <?php
+    }
+
+    // --- Sanitization Callbacks ---
+
+    public function sanitize_latitude( $value ) {
+        $value = floatval( $value );
+        if ( $value < -90 || $value > 90 ) {
+            add_settings_error( 'alw_store_lat', 'invalid_lat', 'Latitude must be between -90 and 90.' );
+            return get_option( 'alw_store_lat' );
+        }
+        return $value;
+    }
+
+    public function sanitize_longitude( $value ) {
+        $value = floatval( $value );
+        if ( $value < -180 || $value > 180 ) {
+            add_settings_error( 'alw_store_lng', 'invalid_lng', 'Longitude must be between -180 and 180.' );
+            return get_option( 'alw_store_lng' );
+        }
+        return $value;
+    }
+
+    public function sanitize_non_negative_float( $value ) {
+        $value = floatval( $value );
+        return max( 0, $value );
+    }
+
+    public function sanitize_max_km( $value ) {
+        $value = floatval( $value );
+        $free_km = floatval( get_option( 'alw_free_km', 0 ) );
+        if ( $value <= 0 ) {
+            add_settings_error( 'alw_max_km', 'invalid_max', 'Max delivery distance must be greater than 0.' );
+            return get_option( 'alw_max_km' );
+        }
+        if ( $value < $free_km ) {
+            add_settings_error( 'alw_max_km', 'max_lt_free', 'Max distance cannot be less than the free shipping distance.' );
+            return get_option( 'alw_max_km' );
+        }
+        return $value;
+    }
+
+    public function sanitize_round_method( $value ) {
+        $allowed = array( 'ceil', 'floor', 'round' );
+        return in_array( $value, $allowed, true ) ? $value : 'ceil';
     }
 }

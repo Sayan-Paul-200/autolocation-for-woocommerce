@@ -14,8 +14,6 @@ class ALW_Shipping_Calculator {
     public function calculate_distance_rate( $rates, $package ) {
         $cust_lat = isset( $_POST['billing_lat'] ) ? floatval( wp_unslash( $_POST['billing_lat'] ) ) : 0;
         $cust_lng = isset( $_POST['billing_lng'] ) ? floatval( wp_unslash( $_POST['billing_lng'] ) ) : 0;
-        // Grab the distance calculated by the Frontend
-        $cust_dist = isset( $_POST['billing_distance'] ) ? floatval( wp_unslash( $_POST['billing_distance'] ) ) : 0;
 
         // Fallback: Geocode if no coords provided
         if ( empty( $cust_lat ) || empty( $cust_lng ) ) {
@@ -34,22 +32,9 @@ class ALW_Shipping_Calculator {
             return $rates;
         }
 
-        // --- DISTANCE LOGIC START ---
-        // Priority 1: Use the Frontend Distance (Driving) if available
-        if ( $cust_dist > 0 ) {
-            $distance_km = $cust_dist;
-        } 
-        // Priority 2: Backend Calculation (Fail-safe)
-        else {
-            $dir = $this->get_directions_distance( ALW_STORE_LAT, ALW_STORE_LNG, $cust_lat, $cust_lng );
-            
-            if ( $dir && isset( $dir['distance_km'] ) ) {
-                $distance_km = (float) $dir['distance_km'];
-            } else {
-                $distance_km = $this->get_haversine_km( (float) ALW_STORE_LAT, (float) ALW_STORE_LNG, (float) $cust_lat, (float) $cust_lng );
-            }
-        }
-        // --- DISTANCE LOGIC END ---
+        // --- DISTANCE LOGIC (Server-Authoritative) ---
+        // Always compute server-side. Never trust $_POST['billing_distance'].
+        $distance_km = $this->compute_server_distance( $cust_lat, $cust_lng );
 
         // Calculate Cost
         $bill_km = $distance_km;
@@ -78,7 +63,6 @@ class ALW_Shipping_Calculator {
     public function validate_distance_limit() {
         $cust_lat = isset( $_POST['billing_lat'] ) ? floatval( wp_unslash( $_POST['billing_lat'] ) ) : 0;
         $cust_lng = isset( $_POST['billing_lng'] ) ? floatval( wp_unslash( $_POST['billing_lng'] ) ) : 0;
-        $cust_dist = isset( $_POST['billing_distance'] ) ? floatval( wp_unslash( $_POST['billing_distance'] ) ) : 0;
 
         if ( empty( $cust_lat ) || empty( $cust_lng ) ) {
             // Fallback to Address Geocoding if map failed to provide coords natively
@@ -97,13 +81,8 @@ class ALW_Shipping_Calculator {
             return;
         }
 
-        // Use the same logic priority
-        if ( $cust_dist > 0 ) {
-            $distance_km = $cust_dist;
-        } else {
-            $dir = $this->get_directions_distance( ALW_STORE_LAT, ALW_STORE_LNG, $cust_lat, $cust_lng );
-            $distance_km = ($dir && isset( $dir['distance_km'] )) ? (float) $dir['distance_km'] : $this->get_haversine_km( (float) ALW_STORE_LAT, (float) ALW_STORE_LNG, (float) $cust_lat, (float) $cust_lng );
-        }
+        // Server-authoritative distance calculation
+        $distance_km = $this->compute_server_distance( $cust_lat, $cust_lng );
 
         if ( $distance_km > ALW_MAX_KM ) {
             wc_add_notice( sprintf( 'We do not deliver to this address — it is %.2f km away which exceeds our delivery radius of %s km.', $distance_km, ALW_MAX_KM ), 'error' );
@@ -111,6 +90,18 @@ class ALW_Shipping_Calculator {
     }
 
     // --- Helpers ---
+
+    /**
+     * Computes distance server-side. Tries Directions API first, falls back to Haversine.
+     * This is the ONLY authoritative distance source. Frontend values are never trusted.
+     */
+    private function compute_server_distance( $cust_lat, $cust_lng ) {
+        $dir = $this->get_directions_distance( ALW_STORE_LAT, ALW_STORE_LNG, $cust_lat, $cust_lng );
+        if ( $dir && isset( $dir['distance_km'] ) ) {
+            return (float) $dir['distance_km'];
+        }
+        return $this->get_haversine_km( (float) ALW_STORE_LAT, (float) ALW_STORE_LNG, (float) $cust_lat, (float) $cust_lng );
+    }
 
     private function get_posted_address( $package = null ) {
         if ( isset( $package['destination'] ) ) {
