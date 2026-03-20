@@ -1,0 +1,206 @@
+# Phase 1: Security Hardening — `v1.3.0` (Deep Dive)
+
+> **Reviewer Role**: Senior WordPress + WooCommerce developer and Google Maps development expert (10+ years)
+
+---
+
+## 1.1 The Pricing Exploit (The Showstopper)
+
+### Current Flow
+
+```mermaid
+sequenceDiagram
+    participant Browser as Customer Browser
+    participant Frontend as Frontend JS
+    participant WC as WooCommerce
+    participant Backend as ALW_Shipping_Calculator
+
+    Browser->>Frontend: User moves map pin
+    Frontend->>Frontend: Calls Google Directions API (client-side)
+    Frontend->>Frontend: Gets distance = 25.4 km
+    Frontend->>Browser: Sets hidden field: billing_distance = 25.4
+    Browser->>WC: Submits checkout form (POST)
+    WC->>Backend: woocommerce_package_rates filter
+    Backend->>Backend: Reads $_POST['billing_distance'] = 25.4
+    Note over Backend: ⚠️ TRUSTS this value as Priority 1
+    Backend->>Backend: Skips own server-side calculation
+    Backend->>WC: Returns rate: 25 × ₹10 = ₹250
+```
+
+### The Exploit
+
+A malicious user opens DevTools (or uses cURL/Postman) and does this:
+
+```javascript
+// In browser console, before clicking "Place Order":
+document.querySelector('input[name="billing_distance"]').value = "0.5";
+```
+
+Or via cURL:
+```bash
+curl -X POST https://store.com/?wc-ajax=checkout \
+  -d "billing_distance=0.5&billing_lat=28.6139&billing_lng=77.2090&..."
+```
+
+The vulnerable code in [class-alw-shipping.php:L39-L41](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#L39-L41):
+
+```php
+// Priority 1: Use the Frontend Distance (Driving) if available
+if ( $cust_dist > 0 ) {
+    $distance_km = $cust_dist;  // Backend accepts 0.5 km — NO QUESTIONS ASKED
+}
+// Priority 2: Backend Calculation (Fail-safe) — NEVER REACHED
+else { ... }
+```
+
+The backend sees `$cust_dist = 0.5`, which is `> 0`, so it **skips its own Directions API / Haversine calculation entirely**. Result: the customer gets free shipping (0.5 ≤ `ALW_FREE_KM`) even though they're actually 25 km away.
+
+### The Fix
+
+Invert the priority. The backend ALWAYS computes its own distance. The frontend value is **ignored for cost calculation**:
+
+```php
+// ALWAYS compute server-side — this is the authoritative distance
+$dir = $this->get_directions_distance( ALW_STORE_LAT, ALW_STORE_LNG, $cust_lat, $cust_lng );
+
+if ( $dir && isset( $dir['distance_km'] ) ) {
+    $distance_km = (float) $dir['distance_km'];
+} else {
+    // Directions API failed — fall back to Haversine (straight-line)
+    $distance_km = $this->get_haversine_km(
+        (float) ALW_STORE_LAT, (float) ALW_STORE_LNG,
+        (float) $cust_lat, (float) $cust_lng
+    );
+}
+```
+
+> [!IMPORTANT]
+> The `$_POST['billing_distance']` value is ignored entirely for cost calculation. It can optionally be logged for debugging, but never used for pricing. Cross-checking (allowing frontend value if "close enough" to backend) is also inadvisable because even a ±20% tolerance can be gamed.
+
+---
+
+## 1.2 API Key Security
+
+When the Google Maps JS API key is embedded in the page source, **anyone** can copy it. That key likely has access to:
+
+| API | Cost (per 1,000 requests) |
+|-----|---------------------------|
+| Geocoding API | ~$5 |
+| Directions API | ~$5–10 |
+| Places API | ~$17–32 |
+| Maps JavaScript API | ~$7 per 1,000 loads |
+
+An attacker who harvests the key could use it in their own application, burning through the store owner's billing quota beyond the $200/month free credit.
+
+### What We'll Do
+
+1. **Admin UI guidance**: Add a prominent notice in the settings page explaining how to restrict the key:
+   - Go to Google Cloud Console → Credentials → Edit the API Key
+   - Under "Application restrictions", set **HTTP referrers** to `yourstore.com/*`
+   - Under "API restrictions", limit to only the 4 required APIs
+
+2. **Mask the key in admin**: Change the input from `type="text"` to `type="password"` so it's not visible on screen by default (prevents shoulder-surfing or screen recordings leaking the key).
+
+3. **Consider a proxy approach** (future): For Directions API calls made from the backend ([get_directions_distance()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#137-161)), the key is only used server-side and never exposed. The frontend JS API key exposure is unavoidable for the Maps JavaScript API, but the referrer restriction makes it safe.
+
+---
+
+## 1.3 Settings Sanitization
+
+Currently, [register_setting()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php#33-54) is called with **no `sanitize_callback`** in [class-alw-admin.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php):
+
+```php
+register_setting( 'alw_settings_group', 'alw_store_lat' );  // No sanitization!
+```
+
+This means an admin (or a CSRF exploit targeting an admin) could save:
+- Latitude = `999` (impossible — valid range is -90 to 90)
+- Rate per KM = `-5` (negative rate — would give customers money back!)
+- Round method = `exec` (if we ever used `call_user_func` on this, it would be catastrophic)
+
+### Implementation
+
+A `sanitize_callback` for each setting:
+
+```php
+register_setting( 'alw_settings_group', 'alw_store_lat', [
+    'type'              => 'number',
+    'sanitize_callback' => [ $this, 'sanitize_latitude' ],
+]);
+```
+
+```php
+public function sanitize_latitude( $value ) {
+    $value = floatval( $value );
+    if ( $value < -90 || $value > 90 ) {
+        add_settings_error( 'alw_store_lat', 'invalid_lat',
+            __( 'Latitude must be between -90 and 90.', 'auto-location-woocommerce' )
+        );
+        return get_option( 'alw_store_lat' ); // Return old value, reject new one
+    }
+    return $value;
+}
+```
+
+### Validation Rules per Setting
+
+| Setting | Validation Rule |
+|---------|----------------|
+| `alw_google_api_key` | `sanitize_text_field()`, non-empty, alphanumeric + dashes |
+| `alw_store_lat` | Float, clamped to `[-90, 90]` |
+| `alw_store_lng` | Float, clamped to `[-180, 180]` |
+| `alw_free_km` | Float, `>= 0` |
+| `alw_max_km` | Float, `> 0`, must be `>= alw_free_km` |
+| `alw_rate_per_km` | Float, `>= 0` |
+| `alw_round_method` | Strict whitelist: `ceil`, `floor`, `round` |
+
+---
+
+## 1.4 Uninstall Cleanup
+
+WordPress plugin guidelines require that plugins clean up after themselves when **deleted** (not just deactivated). Currently, the plugin leaves behind:
+
+1. **7 options** in `wp_options`: `alw_google_api_key`, `alw_store_lat`, `alw_store_lng`, `alw_free_km`, `alw_max_km`, `alw_rate_per_km`, `alw_round_method`
+2. **Potentially hundreds of transients** with prefixes `ds_dir_*` and `ds_geo_*` (one per unique coordinate pair, cached for 7 days)
+
+WordPress provides `uninstall.php` specifically for this. It runs only when the user clicks "Delete" on the Plugins page, in an isolated context where the plugin itself is NOT loaded.
+
+### Implementation
+
+```php
+<?php
+// uninstall.php
+if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) exit;
+
+// Delete all plugin options
+$options = [
+    'alw_google_api_key', 'alw_store_lat', 'alw_store_lng',
+    'alw_free_km', 'alw_max_km', 'alw_rate_per_km', 'alw_round_method'
+];
+foreach ( $options as $opt ) {
+    delete_option( $opt );
+}
+
+// Clean up transients (ds_dir_*, ds_geo_*)
+global $wpdb;
+$wpdb->query(
+    "DELETE FROM {$wpdb->options}
+     WHERE option_name LIKE '_transient_ds_dir_%'
+        OR option_name LIKE '_transient_timeout_ds_dir_%'
+        OR option_name LIKE '_transient_ds_geo_%'
+        OR option_name LIKE '_transient_timeout_ds_geo_%'"
+);
+```
+
+The implementation will also handle **multisite** if applicable (loop through `switch_to_blog()` for each site in a network install).
+
+---
+
+## Phase 1 Deliverables Summary
+
+| Deliverable | File(s) | Risk if Skipped |
+|-------------|---------|-----------------|
+| Server-side distance authority | [class-alw-shipping.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php) | **Pricing exploit — customers get free shipping** |
+| API key admin guidance + masking | [class-alw-admin.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php) | API key abuse, unexpected billing charges |
+| Settings sanitization callbacks | [class-alw-admin.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php) | Invalid config, potential injection vectors |
+| Uninstall cleanup | `uninstall.php` (new) | Database pollution, violates WP.org guidelines |

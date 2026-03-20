@@ -1,0 +1,375 @@
+# Implementation Strategy: Auto-Location for WooCommerce
+
+> **Approach**: 5 phases over ~6–8 weeks, each phase independently deployable. Each phase results in a working, testable plugin version before the next phase begins.
+
+---
+
+## Phase Overview & Timeline
+
+```mermaid
+gantt
+    title ALW Plugin Improvement Roadmap
+    dateFormat  YYYY-MM-DD
+    axisFormat  %b %d
+
+    section Phase 1: Security
+    P0 Security Fixes              :p1, 2026-03-21, 4d
+
+    section Phase 2: WC Architecture
+    Proper Shipping Method + HPOS  :p2, after p1, 5d
+
+    section Phase 3: Code Quality
+    i18n + JS Externalize + Cleanup :p3, after p2, 5d
+
+    section Phase 4: Advanced Features
+    Distance Tiers + Zones + Admin Map :p4, after p3, 7d
+
+    section Phase 5: Future-Proofing
+    WC Blocks + Multi-Store        :p5, after p4, 7d
+```
+
+| Phase | Focus | Est. Effort | Cumulative Timeline |
+|-------|-------|-------------|---------------------|
+| **1** | Security Hardening | 3–4 days | Week 1 |
+| **2** | WooCommerce Architecture Compliance | 4–5 days | Week 2 |
+| **3** | Code Quality & i18n | 4–5 days | Week 3 |
+| **4** | Advanced Features | 5–7 days | Week 4–5 |
+| **5** | Future-Proofing | 5–7 days | Week 6–8 |
+
+---
+
+## Phase 1: Security Hardening — `v1.3.0`
+
+> [!CAUTION]
+> This phase fixes an exploitable pricing vulnerability. Deploy first.
+
+### 1.1 Server-Side Distance Verification
+
+#### [MODIFY] [class-alw-shipping.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php)
+
+**Current**: Backend trusts `$_POST['billing_distance']` as highest priority.
+
+**Change**: Invert the priority — always compute server-side distance first, use frontend value only as a cross-check or fallback hint.
+
+```diff
+- // Priority 1: Use the Frontend Distance (Driving) if available
+- if ( $cust_dist > 0 ) {
+-     $distance_km = $cust_dist;
+- }
+- // Priority 2: Backend Calculation (Fail-safe)
+- else {
++ // ALWAYS compute server-side distance
++ $dir = $this->get_directions_distance( ... );
++ if ( $dir && isset( $dir['distance_km'] ) ) {
++     $distance_km = (float) $dir['distance_km'];
++ } else {
++     $distance_km = $this->get_haversine_km( ... );
++ }
+```
+
+Apply the same change to [validate_distance_limit()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#78-112).
+
+### 1.2 API Key Security Guidance
+
+#### [MODIFY] [class-alw-admin.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php)
+
+- Add a warning notice below the API Key field advising the admin to restrict the key to their domain (HTTP referrer restriction) and limit it to only the 4 required APIs.
+- Change the input type from [text](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php#83-88) to `password` so the key is masked by default.
+
+### 1.3 Settings Sanitization
+
+#### [MODIFY] [class-alw-admin.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php)
+
+Add `sanitize_callback` to every [register_setting()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php#33-54) call:
+
+| Setting | Sanitizer |
+|---------|-----------|
+| `alw_google_api_key` | `sanitize_text_field` |
+| `alw_store_lat` | Custom: validate float, range `-90` to `90` |
+| `alw_store_lng` | Custom: validate float, range `-180` to `180` |
+| `alw_free_km` | `absint` or custom: non-negative float |
+| `alw_max_km` | Custom: non-negative float, must be ≥ `free_km` |
+| `alw_rate_per_km` | Custom: non-negative float |
+| `alw_round_method` | Custom: whitelist `ceil`, `floor`, `round` |
+
+### 1.4 Uninstall Cleanup
+
+#### [NEW] [uninstall.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/uninstall.php)
+
+```php
+<?php
+if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) exit;
+// Delete all plugin options
+$options = ['alw_google_api_key','alw_store_lat','alw_store_lng','alw_free_km','alw_max_km','alw_rate_per_km','alw_round_method'];
+foreach ( $options as $opt ) delete_option( $opt );
+// Clean up transients (ds_dir_*, ds_geo_*)
+global $wpdb;
+$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_ds_dir_%' OR option_name LIKE '_transient_timeout_ds_dir_%' OR option_name LIKE '_transient_ds_geo_%' OR option_name LIKE '_transient_timeout_ds_geo_%'" );
+```
+
+---
+
+## Phase 2: WooCommerce Architecture Compliance — `v1.4.0`
+
+### 2.1 Proper WC_Shipping_Method Integration
+
+#### [NEW] [class-alw-shipping-method.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping-method.php)
+
+Create a new class `ALW_Shipping_Method extends WC_Shipping_Method` that:
+- Declares `$this->id = 'alw_distance_shipping'`
+- Appears in **WooCommerce → Settings → Shipping → Shipping Zones**
+- Implements `calculate_shipping( $package )` using the existing distance logic from [ALW_Shipping_Calculator](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#4-184)
+- Supports instance settings (rate per km, free km, max km) so different zones can have different rules
+
+#### [MODIFY] [class-alw-shipping.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php)
+
+Refactor into a **helper/service class** (`ALW_Distance_Service`) that the shipping method calls. Keep [validate_distance_limit()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#78-112) and the helper methods ([get_directions_distance](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#137-161), [geocode_address](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#162-183), [get_haversine_km](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#128-136)) here.
+
+#### [MODIFY] [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php)
+
+Register the shipping method via `woocommerce_shipping_methods` filter:
+
+```php
+add_filter( 'woocommerce_shipping_methods', function( $methods ) {
+    $methods['alw_distance_shipping'] = 'ALW_Shipping_Method';
+    return $methods;
+});
+```
+
+### 2.2 HPOS Compatibility Declaration
+
+#### [MODIFY] [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php)
+
+```php
+add_action( 'before_woocommerce_init', function() {
+    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+    }
+});
+```
+
+### 2.3 WooCommerce Dependency Check
+
+#### [MODIFY] [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php)
+
+Add an activation/runtime check that WooCommerce is active before loading any plugin logic. Display a dismissible admin notice if WC is not found.
+
+---
+
+## Phase 3: Code Quality & Internationalization — `v1.5.0`
+
+### 3.1 Externalize JavaScript
+
+#### [NEW] [alw-checkout-map.js](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/assets/js/alw-checkout-map.js)
+
+Move the 520+ line JS from the Heredoc in [class-alw-frontend.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-frontend.php) into this external file. Replace template placeholders with `wp_localize_script()`:
+
+```php
+wp_enqueue_script( 'alw-checkout-map', plugins_url('assets/js/alw-checkout-map.js', dirname(__FILE__)), ['jquery'], $ver, true );
+wp_localize_script( 'alw-checkout-map', 'alw_config', [
+    'api_key'      => ALW_GOOGLE_API_KEY,
+    'store_lat'    => ALW_STORE_LAT,
+    'store_lng'    => ALW_STORE_LNG,
+    'free_km'      => ALW_FREE_KM,
+    'max_km'       => ALW_MAX_KM,
+    'rate_per_km'  => ALW_RATE_PER_KM,
+    'round_method' => ALW_ROUND_METHOD,
+    'currency'     => get_woocommerce_currency_symbol(),
+]);
+```
+
+#### [NEW] [alw-checkout-blocker.js](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/assets/js/alw-checkout-blocker.js)
+
+Move the blocking script from [output_blocking_script()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-frontend.php#50-145) into this external file.
+
+#### [MODIFY] [class-alw-frontend.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-frontend.php)
+
+- Remove the [get_map_js_template()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-frontend.php#146-670) Heredoc method entirely
+- Remove [output_blocking_script()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-frontend.php#50-145) inline `<script>` tag
+- Enqueue both new JS files via `wp_enqueue_scripts`
+- Significant reduction from ~670 lines to ~80 lines
+
+### 3.2 JS Namespace Consolidation
+
+In the new `alw-checkout-map.js`, wrap everything under a single namespace:
+
+```javascript
+window.ALW = window.ALW || {};
+(function(ALW, config) {
+    ALW.map = null;
+    ALW.markers = {};
+    // ... all logic
+})(window.ALW, window.alw_config);
+```
+
+### 3.3 Internationalization (i18n)
+
+#### [MODIFY] All PHP files
+
+Wrap every user-facing string with [__()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#6-13) or `esc_html__()`:
+
+```diff
+- wc_add_notice( 'We do not deliver to this address...', 'error' );
++ wc_add_notice( sprintf(
++     __( 'We do not deliver to this address — it is %.2f km away which exceeds our delivery radius of %s km.', 'auto-location-woocommerce' ),
++     $distance_km, ALW_MAX_KM
++ ), 'error' );
+```
+
+JS strings will use `alw_config.i18n.string_key` passed from `wp_localize_script()`.
+
+### 3.4 Hardcoded Currency Fix
+
+#### [MODIFY] Frontend JS (new `alw-checkout-map.js`)
+
+```diff
+- shippingText = 'Shipping: ₹' + calc.cost;
++ shippingText = config.i18n.shipping_label + ': ' + config.currency + calc.cost;
+```
+
+---
+
+## Phase 4: Advanced Features — `v2.0.0`
+
+### 4.1 Distance Brackets / Tiered Pricing
+
+#### [MODIFY] [class-alw-shipping-method.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping-method.php)
+
+Add a repeater-style settings field for distance tiers:
+
+| From (km) | To (km) | Rate per KM | Flat Fee |
+|-----------|---------|-------------|----------|
+| 0 | 5 | 0 | 0 (Free) |
+| 5 | 15 | 10 | 0 |
+| 15 | 30 | 15 | 50 |
+
+Store as serialized array in instance settings. The `calculate_shipping()` method will look up the appropriate tier.
+
+### 4.2 Admin Map Picker for Store Coordinates
+
+#### [MODIFY] [class-alw-admin.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php)
+
+#### [NEW] [alw-admin-map.js](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/assets/js/alw-admin-map.js)
+
+Embed a small Google Map in the admin settings page where the admin can:
+- Click the map to set store coordinates
+- Use "My Location" to auto-fill coordinates
+- See a visual confirmation of the selected point
+
+Auto-populate the lat/lng fields when the map pin is moved.
+
+### 4.3 Address Autocomplete (Places API)
+
+#### [MODIFY] [alw-checkout-map.js](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/assets/js/alw-checkout-map.js)
+
+Add Google Places Autocomplete to the `billing_address_1` field. When a suggestion is selected:
+1. Extract lat/lng from the Place result
+2. Pan the map to that location
+3. Trigger distance recalculation
+
+### 4.4 Delivery Radius Visualization
+
+#### [MODIFY] [alw-checkout-map.js](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/assets/js/alw-checkout-map.js)
+
+Draw a semi-transparent circle on the map centered on the store with `radius = MAX_KM * 1000` meters. This gives the customer a visual cue of the delivery zone.
+
+---
+
+## Phase 5: Future-Proofing — `v2.1.0`
+
+### 5.1 WooCommerce Blocks Checkout Support
+
+#### [NEW] [src/](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/src/)
+
+Create a React-based block integration:
+- `src/checkout-block/index.js` — Register a checkout block integration
+- `src/checkout-block/frontend.js` — The map component for the Blocks checkout
+- Use `@woocommerce/blocks-checkout` package and `registerCheckoutBlock()`
+- Integrate with the Store API via `ExtendSchema`
+
+#### [NEW] [class-alw-blocks-integration.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-blocks-integration.php)
+
+PHP-side integration:
+- Implement `Automattic\WooCommerce\Blocks\Integrations\IntegrationInterface`
+- Register block scripts and pass config to the frontend
+
+### 5.2 Multi-Store Origin Support
+
+#### [MODIFY] Admin Settings / Shipping Method
+
+- Allow defining multiple store/warehouse origins with individual coordinates
+- The shipping calculation picks the **closest origin** to the customer to calculate the rate
+- Each origin can have its own delivery radius and pricing rules
+
+### 5.3 Delivery Scheduling (Stretch)
+
+- Add a date/time picker to checkout
+- Define delivery windows (e.g., 9am–12pm, 2pm–6pm)
+- Optional surcharge for express/off-hours delivery
+
+---
+
+## File Impact Summary
+
+| File | Phase 1 | Phase 2 | Phase 3 | Phase 4 | Phase 5 |
+|------|---------|---------|---------|---------|---------|
+| [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php) | — | ✏️ | — | — | ✏️ |
+| [includes/class-alw-admin.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-admin.php) | ✏️ | — | ✏️ | ✏️ | — |
+| [includes/class-alw-shipping.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php) | ✏️ | ✏️ → Service | ✏️ | — | — |
+| `includes/class-alw-shipping-method.php` | — | 🆕 | — | ✏️ | ✏️ |
+| [includes/class-alw-frontend.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-frontend.php) | — | — | ✏️ (major) | — | — |
+| [includes/class-alw-checkout.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-checkout.php) | — | — | ✏️ | — | — |
+| `includes/class-alw-blocks-integration.php` | — | — | — | — | 🆕 |
+| `assets/js/alw-checkout-map.js` | — | — | 🆕 | ✏️ | — |
+| `assets/js/alw-checkout-blocker.js` | — | — | 🆕 | — | — |
+| `assets/js/alw-admin-map.js` | — | — | — | 🆕 | — |
+| `src/checkout-block/*` | — | — | — | — | 🆕 |
+| `uninstall.php` | 🆕 | — | — | — | — |
+
+---
+
+## Verification Plan
+
+Since this is a WordPress plugin without a local test harness, verification will be practical and incremental.
+
+### After Each Phase — Manual Smoke Tests
+
+> [!IMPORTANT]
+> These tests require a live or local WordPress + WooCommerce environment (e.g., LocalWP, DDEV, or similar). The plugin must be activated and configured with a valid Google Maps API key.
+
+#### Phase 1 Verification
+1. **Security exploit test**: Open browser DevTools on the checkout page → Console → run `document.querySelector('input[name="billing_distance"]').value = "0.1"` → Complete checkout. Verify the order's shipping cost matches the **server-calculated** distance, not `0.1`.
+2. **Settings sanitization**: Go to Auto Location Settings → Enter invalid values (e.g., lat = `999`, lng = `abc`, rate = `-5`) → Save → Verify they are rejected or clamped.
+3. **Uninstall cleanup**: Deactivate → Delete the plugin → Check `wp_options` table for any remaining `alw_*` rows or `ds_dir_*` / `ds_geo_*` transients. There should be none.
+
+#### Phase 2 Verification
+1. **Shipping Zone integration**: Go to WooCommerce → Settings → Shipping → Add Shipping Zone → Verify "ALW Distance Shipping" appears as an available method.
+2. **Coexistence**: Add both "Flat Rate" and "ALW Distance Shipping" to a zone → Verify both rates appear at checkout (ALW is no longer overwriting all rates).
+3. **HPOS**: Enable HPOS in WooCommerce → Settings → Advanced → Features → Verify the plugin does not show an incompatibility warning.
+
+#### Phase 3 Verification
+1. **JS external file**: Open checkout page → View Page Source → Confirm no 500+ line inline JS block. Confirm `alw-checkout-map.js` is loaded as an external script.
+2. **Browser caching**: Reload checkout page → Network tab → Verify `alw-checkout-map.js` returns `304 Not Modified` on second load.
+3. **i18n**: Install a translation plugin (e.g., Loco Translate) → Verify all plugin strings appear in the translation interface under the `auto-location-woocommerce` text domain.
+4. **Currency**: Change WooCommerce currency to USD → Verify the shipping info panel shows `$` instead of `₹`.
+
+#### Phase 4 Verification
+1. **Distance tiers**: Configure tiered pricing (0-5km free, 5-15km ₹10/km, 15-30km ₹15/km + ₹50 flat) → Place orders at various distances → Verify correct tier is applied.
+2. **Admin map**: Go to settings → Verify a map is displayed → Click on the map → Verify lat/lng fields auto-populate.
+3. **Address autocomplete**: Type an address on checkout → Verify suggestions appear → Select one → Verify map pans to location.
+
+#### Phase 5 Verification
+1. **WC Blocks**: Switch to the Block-based checkout (edit the checkout page in the block editor) → Verify the map appears and the distance calculation works.
+2. **Multi-store**: Configure 2 origins → Place order from a location closer to origin B → Verify the rate is calculated from origin B.
+
+---
+
+## Versioning Strategy
+
+| Version | Phase | Tag |
+|---------|-------|-----|
+| `1.3.0` | Phase 1 — Security | `v1.3.0` |
+| `1.4.0` | Phase 2 — WC Architecture | `v1.4.0` |
+| `1.5.0` | Phase 3 — Code Quality | `v1.5.0` |
+| `2.0.0` | Phase 4 — Advanced Features | `v2.0.0` |
+| `2.1.0` | Phase 5 — Future-Proofing | `v2.1.0` |
