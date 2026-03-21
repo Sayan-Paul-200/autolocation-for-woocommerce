@@ -79,10 +79,11 @@ class ALW_Checkout_Manager {
         $map_url = esc_url( "https://maps.google.com/?q={$lat},{$lng}" );
 
         if ( $plain_text ) {
-            echo "Delivery Map Pin: {$map_url}\n\n";
+            /* translators: %s: Google Maps URL */
+            printf( __( 'Delivery Map Pin: %s', 'auto-location-woocommerce' ) . "\n\n", $map_url );
         } else {
-            echo '<h2>Delivery Location</h2>';
-            echo '<p><strong>Map Pin:</strong> <a href="' . $map_url . '" target="_blank">View exact delivery location on Google Maps &rarr;</a></p>';
+            echo '<h2>' . esc_html__( 'Delivery Location', 'auto-location-woocommerce' ) . '</h2>';
+            echo '<p><strong>' . esc_html__( 'Map Pin:', 'auto-location-woocommerce' ) . '</strong> <a href="' . $map_url . '" target="_blank">' . esc_html__( 'View exact delivery location on Google Maps', 'auto-location-woocommerce' ) . ' &rarr;</a></p>';
         }
     }
 }

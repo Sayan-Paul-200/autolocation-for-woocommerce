@@ -1,0 +1,507 @@
+# Phase 3: Code Quality & Internationalization — `v1.5.0` (Deep Dive)
+
+> **Reviewer Role**: Senior WordPress + WooCommerce developer and Google Maps development expert (10+ years)
+
+---
+
+## Why Phase 3 Matters
+
+Phases 1 and 2 fixed critical security and architecture issues. The plugin is now **functionally correct** and **WooCommerce-compliant**. But it's not **distributable**. Phase 3 transforms it from "works on my site" code into code that meets WordPress.org plugin repository standards and is maintainable long-term.
+
+The four issues this phase addresses are all **code quality and standards** concerns:
+
+| Issue | Impact |
+|---|---|
+| 520+ lines of inline JS via PHP Heredoc | No browser caching, no source maps, no minification, debugging nightmare |
+| 10+ `window.*` global variables | Collision risk with other plugins, namespace pollution |
+| 0% translation coverage | Plugin is English-only, unusable in non-English WooCommerce stores |
+| Hardcoded `₹` currency symbol | Breaks in any store not using Indian Rupees |
+
+None of these are bugs — the plugin works. But every one of them would be a **rejection reason** on WordPress.org, and every one makes the codebase harder to maintain, debug, and extend.
+
+---
+
+## 3.1 JavaScript Externalization
+
+### The Problem
+
+All 520+ lines of Google Maps logic live inside a PHP Heredoc string in `class-alw-frontend.php:146–668`:
+
+```php
+private function get_map_js_template() {
+    return <<<'JS'
+(function(){
+  const API_KEY = __API_KEY__;
+  const STORE_LAT = __STORE_LAT__;
+  // ... 520+ lines of JS ...
+})();
+JS;
+}
+```
+
+Config values are injected via string replacement:
+
+```php
+$script = str_replace(
+    array('__API_KEY__', '__STORE_LAT__', '__STORE_LNG__', ...),
+    array($api_key_js, $store_lat_js, $store_lng_js, ...),
+    $js_template
+);
+wp_add_inline_script( 'jquery', $script );
+```
+
+Additionally, there's a second inline script block — the checkout blocking logic — injected via `output_blocking_script()` (lines 50–143) using a raw `<script>` tag in `wp_footer`.
+
+### Why This Is a Problem
+
+| Concern | Explanation |
+|---|---|
+| **No browser caching** | Inline scripts are embedded in the HTML response. They're re-downloaded and re-parsed on every single page load. An external `.js` file would be cached by the browser and served from disk on subsequent visits. |
+| **No CDN support** | Inline scripts can't be served from a CDN. External files can. |
+| **No source maps** | When an error occurs in 520 lines of inline JS, the browser console shows `(index):847` — useless. An external file would show `alw-checkout-map.js:312` — directly debuggable. |
+| **No minification** | Build tools (Terser, UglifyJS) can't touch inline PHP Heredoc strings. An external `.js` file can be minified, reducing payload by ~40%. |
+| **CSP violations** | Sites with Content Security Policy headers that block `unsafe-inline` scripts will break entirely. External scripts pass CSP checks via nonces or hashes. |
+| **IDE support** | PHP Heredoc strings get zero JavaScript IntelliSense, linting, or syntax highlighting in most editors. A `.js` file gets full tooling. |
+| **WordPress.org rejection** | The plugin review team flags large inline script blocks. They expect `wp_enqueue_script()` + `wp_localize_script()` — the standard WordPress pattern. |
+
+### The Fix: Two External JS Files + `wp_localize_script()`
+
+WordPress has a built-in mechanism for exactly this problem: **enqueue an external script file**, then pass PHP config values to it via `wp_localize_script()`.
+
+#### New File: `assets/js/alw-checkout-map.js`
+
+This file will contain the entire map logic currently in the `get_map_js_template()` Heredoc. Instead of `__API_KEY__` placeholders, it reads values from a global config object passed by PHP:
+
+```javascript
+// alw-checkout-map.js
+(function($, config) {
+    'use strict';
+
+    const API_KEY     = config.api_key;
+    const STORE_LAT   = parseFloat(config.store_lat);
+    const STORE_LNG   = parseFloat(config.store_lng);
+    const FREE_KM     = parseFloat(config.free_km);
+    const MAX_KM      = parseFloat(config.max_km);
+    const RATE_PER_KM = parseFloat(config.rate_per_km);
+    const ROUND_METHOD = config.round_method;
+    const CURRENCY    = config.currency_symbol;  // ← No more hardcoded ₹
+
+    // ... rest of the map logic, unchanged ...
+
+})(jQuery, window.alw_checkout_config || {});
+```
+
+#### New File: `assets/js/alw-checkout-blocker.js`
+
+The blocking script from `output_blocking_script()` moves here. It has no config dependencies — it's purely DOM observation logic.
+
+```javascript
+// alw-checkout-blocker.js
+(function() {
+    'use strict';
+
+    const PANEL_ID = 'ds-shipping-info';
+    const PLACE_BTN_SELECTOR = 'form.checkout input#place_order, ...';
+
+    // ... blocking logic unchanged ...
+})();
+```
+
+#### Modified: `class-alw-frontend.php`
+
+The `enqueue_frontend_assets()` method changes from:
+
+```php
+// BEFORE (current — 30 lines of string replacement + inline injection)
+$js_template = $this->get_map_js_template();
+$script = str_replace(
+    array('__API_KEY__', '__STORE_LAT__', ...),
+    array($api_key_js, $store_lat_js, ...),
+    $js_template
+);
+wp_add_inline_script( 'jquery', $script );
+```
+
+To:
+
+```php
+// AFTER (standard WordPress pattern — clean, cacheable, debuggable)
+wp_enqueue_script(
+    'alw-checkout-map',
+    plugin_dir_url( dirname( __FILE__ ) ) . 'assets/js/alw-checkout-map.js',
+    array( 'jquery' ),
+    filemtime( plugin_dir_path( dirname( __FILE__ ) ) . 'assets/js/alw-checkout-map.js' ),
+    true  // Load in footer
+);
+
+wp_localize_script( 'alw-checkout-map', 'alw_checkout_config', array(
+    'api_key'         => ALW_GOOGLE_API_KEY,
+    'store_lat'       => ALW_STORE_LAT,
+    'store_lng'       => ALW_STORE_LNG,
+    'free_km'         => ALW_FREE_KM,
+    'max_km'          => ALW_MAX_KM,
+    'rate_per_km'     => ALW_RATE_PER_KM,
+    'round_method'    => ALW_ROUND_METHOD,
+    'currency_symbol' => html_entity_decode( get_woocommerce_currency_symbol() ),
+    'i18n'            => array(
+        'shipping_free'          => __( 'Shipping: FREE', 'auto-location-woocommerce' ),
+        'shipping_label'         => __( 'Shipping', 'auto-location-woocommerce' ),
+        'delivery_not_available' => sprintf(
+            __( 'DELIVERY NOT AVAILABLE (beyond %s km)', 'auto-location-woocommerce' ),
+            ALW_MAX_KM
+        ),
+        'enter_address'          => __( 'Enter billing address or pick location on the map to calculate shipping.', 'auto-location-woocommerce' ),
+        'place_pin'              => __( 'Place the pin at exact delivery location', 'auto-location-woocommerce' ),
+        'current_location'       => __( 'Current location', 'auto-location-woocommerce' ),
+        'getting_location'       => __( 'Getting location…', 'auto-location-woocommerce' ),
+        'geolocation_unsupported'=> __( 'Geolocation not supported.', 'auto-location-woocommerce' ),
+        'location_failed'        => __( 'Could not get location.', 'auto-location-woocommerce' ),
+        'location_set'           => __( 'Location set', 'auto-location-woocommerce' ),
+        'use_my_location'        => __( 'Use my location for billing address', 'auto-location-woocommerce' ),
+        'maps_not_ready'         => __( 'Maps not ready. Please try again.', 'auto-location-woocommerce' ),
+        'cannot_compute'         => __( 'Could not compute distance. Please use the map.', 'auto-location-woocommerce' ),
+        'approx_location'        => __( 'Approx location', 'auto-location-woocommerce' ),
+        'selected_location'      => __( 'Selected location', 'auto-location-woocommerce' ),
+        'store_label'            => __( 'Store', 'auto-location-woocommerce' ),
+        'delivery_location'      => __( 'Delivery location', 'auto-location-woocommerce' ),
+        'delivery_block_message' => __( 'Delivery not available to the selected location. Please choose a different address or contact support.', 'auto-location-woocommerce' ),
+    ),
+));
+
+wp_enqueue_script(
+    'alw-checkout-blocker',
+    plugin_dir_url( dirname( __FILE__ ) ) . 'assets/js/alw-checkout-blocker.js',
+    array(),
+    filemtime( plugin_dir_path( dirname( __FILE__ ) ) . 'assets/js/alw-checkout-blocker.js' ),
+    true
+);
+```
+
+#### What Gets Deleted from `class-alw-frontend.php`
+
+| Method | Lines | Action |
+|---|---|---|
+| `get_map_js_template()` | 146–668 (522 lines) | **Delete entirely** — logic moves to `alw-checkout-map.js` |
+| `output_blocking_script()` | 50–143 (93 lines) | **Delete entirely** — logic moves to `alw-checkout-blocker.js` |
+
+**Net effect**: `class-alw-frontend.php` shrinks from **670 lines to ~50 lines**. It becomes a thin enqueue-and-configure class — exactly what it should be.
+
+### Technical Detail: Google Maps Script Loading
+
+The current Heredoc injects the Google Maps `<script>` tag dynamically:
+
+```javascript
+function injectMapsScript(url, id, onload, onerror) {
+    var s = document.createElement('script');
+    s.src = url;
+    // ...
+    document.head.appendChild(s);
+}
+```
+
+This approach is fine and should remain in `alw-checkout-map.js`. We do **not** want to enqueue the Google Maps API via `wp_enqueue_script()` because:
+
+1. The Maps API URL contains the store's API key — it's dynamic, not a static file
+2. The Maps API script requires a callback to trigger `dsInitMap()` — this is handled by the existing `injectMapsScript` + polling pattern
+3. Loading is conditional on the map DOM element existing
+
+The external JS file handles its own Google Maps bootstrap — this is standard practice and documented by Google.
+
+---
+
+## 3.2 JavaScript Namespace Consolidation
+
+### The Problem
+
+The frontend JS creates **12 global variables** on `window`:
+
+| # | Global Variable | Purpose | Risk |
+|---|---|---|---|
+| 1 | `window._dsMapsLoaded` | Flag: Maps API loaded | ⚠️ Generic `_ds` prefix |
+| 2 | `window.dsMap` | Google Maps instance | ⚠️ Generic name |
+| 3 | `window.dsStoreMarker` | Store marker | ⚠️ Generic name |
+| 4 | `window.dsCustomerMarker` | Customer pin marker | ⚠️ Generic name |
+| 5 | `window.dsGeocoder` | Geocoder instance | ⚠️ Generic name |
+| 6 | `window.dsUserLocMarker` | Blue dot marker | ⚠️ Generic name |
+| 7 | `window.dsUserLocCircle` | Accuracy circle | ⚠️ Generic name |
+| 8 | `window.dsConnectionLine` | Dotted line | ⚠️ Generic name |
+| 9 | `window.dsInitMap` | Map init callback | ⚠️ Generic name |
+| 10 | `window.DS_recomputeShippingNow` | Public API: force recompute | ⚠️ Generic name |
+| 11 | `window.alw_checkout_config` | Config from `wp_localize_script` | ✅ Namespaced (new) |
+| 12 | `window.ALW` | Namespace object | ✅ This is what we're creating |
+
+The `ds` prefix (presumably from an older name — "Distance Shipping"?) offers no collision protection. Any other plugin using `window.dsMap` or `window.dsGeocoder` would silently overwrite these.
+
+### The Fix
+
+Consolidate everything under `window.ALW`:
+
+```javascript
+window.ALW = window.ALW || {};
+
+(function(ALW, $, config) {
+    'use strict';
+
+    // Private state — NOT on window
+    var map = null;
+    var storeMarker = null;
+    var customerMarker = null;
+    var geocoder = null;
+    var userLocMarker = null;
+    var userLocCircle = null;
+    var connectionLine = null;
+    var mapsLoaded = false;
+
+    // Public API — accessible as ALW.recomputeShipping()
+    ALW.recomputeShipping = recomputeAndShow;
+    ALW.initMap = dsInitMap;
+    ALW.mapsLoaded = function() { return mapsLoaded; };
+
+    // ... rest of logic uses local variables instead of window.* ...
+
+})(window.ALW, jQuery, window.alw_checkout_config || {});
+```
+
+**Before**: 12 global variables with generic `ds` prefix.
+**After**: 1 global variable (`window.ALW`) with everything else as private local variables or properties of `ALW`.
+
+### Impact on Other Code
+
+The blocking script (`alw-checkout-blocker.js`) does NOT reference any `window.ds*` variables — it only reads DOM elements (`#ds-shipping-info`, `#place_order`). So it requires **no changes** for namespace consolidation.
+
+The only cross-reference is `window.dsInitMap` which is called by our own code. After renaming to `ALW.initMap`, the reference in `ensureMapInjection()` simply changes from `window.dsInitMap()` to `ALW.initMap()`.
+
+---
+
+## 3.3 Internationalization (i18n)
+
+### The Problem
+
+The plugin declares `Text Domain: auto-location-woocommerce` in its header but wraps **zero** strings with translation functions. This means:
+
+1. Translation plugins (Loco Translate, WPML, Polylang) can't discover any strings
+2. The plugin is permanently English-only
+3. WordPress.org would reject this — translation readiness is a requirement
+
+### What Needs Wrapping
+
+There are two categories of user-facing strings:
+
+#### A. PHP Strings (Backend)
+
+These use WordPress translation functions directly:
+
+| File | String | Function |
+|---|---|---|
+| `auto-location-woocommerce.php:39` | `'Auto-Location for WooCommerce requires WooCommerce...'` | `esc_html__()` |
+| `auto-location-woocommerce.php:71` | `'Auto-Location Plugin Paused: Please fill in...'` | `__()` with `wp_kses()` |
+| `auto-location-woocommerce.php:122` | `'We could not pinpoint your delivery location...'` | `__()` |
+| `auto-location-woocommerce.php:131` | `'We do not deliver to this address...'` | `__()` with `sprintf()` |
+| `class-alw-admin.php:28` | `'Auto Location Settings'`, `'Auto Location'` | `__()` |
+| `class-alw-admin.php:59–66` | All field labels: `'Google Maps API Key'`, `'Store Latitude'`, etc. | `__()` |
+| `class-alw-admin.php:73` | `'Required: Geocoding API, Maps JavaScript API...'` | `esc_html__()` |
+| `class-alw-admin.php:76–79` | Security warning text | `__()` with `wp_kses()` |
+| `class-alw-admin.php:117` | Rounding method labels: `'Ceil (Round Up)'`, etc. | `__()` |
+| `class-alw-admin.php:135` | `'Save Settings'` | `__()` |
+| `class-alw-admin.php:147` | `'Latitude must be between -90 and 90.'` | `__()` |
+| `class-alw-admin.php:156` | `'Longitude must be between -180 and 180.'` | `__()` |
+| `class-alw-admin.php:171` | `'Max delivery distance must be greater than 0.'` | `__()` |
+| `class-alw-admin.php:175` | `'Max distance cannot be less than...'` | `__()` |
+| `class-alw-checkout.php:82` | `'Delivery Map Pin: ...'` (plain text email) | `__()` |
+| `class-alw-checkout.php:84–85` | `'Delivery Location'`, `'Map Pin:'`, `'View exact delivery...'` | `__()` |
+| `class-alw-shipping-method.php:23–24` | `'Distance-Based Shipping'`, method description | `__()` |
+| `class-alw-shipping-method.php:55–96` | All instance form field titles and descriptions | `__()` |
+| `class-alw-shipping-method.php:156–159` | Shipping rate labels: `'Free — ...'`, `'Distance Shipping (...)'` | `__()` with `sprintf()` |
+
+**Total PHP strings to wrap: ~30+**
+
+#### B. JavaScript Strings (Frontend)
+
+JS cannot call `__()` directly. The standard WordPress solution is to pass pre-translated strings via `wp_localize_script()`. The JS code then reads them from the config object.
+
+Current hardcoded strings in the JS Heredoc:
+
+| Line | String | Replacement Key |
+|---|---|---|
+| 264 | `'DELIVERY NOT AVAILABLE (beyond ' + MAX_KM + ' km)'` | `config.i18n.delivery_not_available` |
+| 267 | `'Shipping: FREE'` | `config.i18n.shipping_free` |
+| 270 | `'Shipping: ₹'` | `config.i18n.shipping_label + ': ' + config.currency_symbol` |
+| 275 | `'Place the pin at exact delivery location'` | `config.i18n.place_pin` |
+| 367 | `'Enter billing address or use the map...'` | `config.i18n.enter_address` |
+| 389 | `'Could not compute distance. Please use the map.'` | `config.i18n.cannot_compute` |
+| 391 | `'Maps not ready. Please try again.'` | `config.i18n.maps_not_ready` |
+| 413 | `'Approx location'` | `config.i18n.approx_location` |
+| 412 | `'Selected location'` | `config.i18n.selected_location` |
+| 474 | `'Store'` | `config.i18n.store_label` |
+| 484 | `'Delivery location'` | `config.i18n.delivery_location` |
+| 568 | `'Current location'` | `config.i18n.current_location` |
+| 577 | `'Current location'` (button label) | `config.i18n.current_location` |
+| 585 | `'Getting location…'` | `config.i18n.getting_location` |
+| 586 | `'Geolocation not supported.'` | `config.i18n.geolocation_unsupported` |
+| 594 | `'Could not get location.'` | `config.i18n.location_failed` |
+| 633 | `'Use my location for billing address'` | `config.i18n.use_my_location` |
+| 639 | `'Enter billing address or pick location...'` | `config.i18n.enter_address` |
+| 645 | `'Geolocation not supported.'` | `config.i18n.geolocation_unsupported` |
+| 647 | `'Getting location…'` | `config.i18n.getting_location` |
+| 657 | `'Location set'` | `config.i18n.location_set` |
+| 658 | `'Use my location for billing address'` | `config.i18n.use_my_location` |
+| 662 | `'Could not get location.'` | `config.i18n.location_failed` |
+
+Also the blocking script in `output_blocking_script()`:
+
+| Line | String | Replacement Key |
+|---|---|---|
+| 64 | `'Delivery not available to the selected location...'` | Passed via `wp_localize_script` or left as fallback text |
+| 136 | `'Delivery not available.'` | Same |
+
+**Total JS strings: ~20 unique strings** (some repeated).
+
+### How `wp_localize_script()` i18n Works
+
+```mermaid
+sequenceDiagram
+    participant PHP as PHP (enqueue_frontend_assets)
+    participant WP as WordPress Core
+    participant Browser as Browser
+
+    PHP->>PHP: __('Shipping: FREE', 'auto-location-woocommerce')
+    Note over PHP: Returns translated string<br/>"Envío: GRATIS" (Spanish)
+    PHP->>WP: wp_localize_script('alw-checkout-map',<br/>'alw_checkout_config', $config)
+    WP->>Browser: Injects: var alw_checkout_config = {"i18n":{"shipping_free":"Envío: GRATIS",...}};
+    Browser->>Browser: alw-checkout-map.js reads config.i18n.shipping_free
+    Note over Browser: Shows "Envío: GRATIS" in the UI
+```
+
+The translation happens in PHP (where `.po`/`.mo` files are loaded), and the already-translated string is passed to JS as data. The JS code never needs to know about locales — it just reads `config.i18n.*`.
+
+---
+
+## 3.4 Hardcoded Currency Symbol
+
+### The Problem
+
+One line in the frontend JS:
+
+```javascript
+// class-alw-frontend.php:270 (inside Heredoc)
+shippingText = 'Shipping: ₹' + calc.cost;
+```
+
+Any WooCommerce store not using Indian Rupees will see the wrong currency symbol in the real-time shipping panel.
+
+### The Fix
+
+This is solved naturally by the JS externalization + i18n work:
+
+```javascript
+// In alw-checkout-map.js
+if (calc.cost === 0) {
+    shippingText = config.i18n.shipping_free;
+} else {
+    shippingText = config.i18n.shipping_label + ': ' + config.currency_symbol + calc.cost;
+}
+```
+
+The `currency_symbol` comes from PHP:
+
+```php
+'currency_symbol' => html_entity_decode( get_woocommerce_currency_symbol() ),
+```
+
+`get_woocommerce_currency_symbol()` returns the correct symbol for whatever currency the store is configured to use (`$`, `€`, `£`, `₹`, etc.). The `html_entity_decode()` call is needed because WooCommerce sometimes returns HTML entities (e.g., `&pound;` for `£`), but we need the actual character for JS text content.
+
+---
+
+## File Impact Summary
+
+| File | Action | Change Size |
+|---|---|---|
+| `class-alw-frontend.php` | ✏️ **Major rewrite** — delete Heredoc + blocking script, replace with `wp_enqueue_script` + `wp_localize_script` | 670 → ~50 lines |
+| `assets/js/alw-checkout-map.js` | 🆕 **New** — all map logic from Heredoc, namespace-consolidated | ~520 lines |
+| `assets/js/alw-checkout-blocker.js` | 🆕 **New** — blocking logic from `output_blocking_script()` | ~90 lines |
+| `auto-location-woocommerce.php` | ✏️ Wrap strings with `__()` | ~5 strings |
+| `class-alw-admin.php` | ✏️ Wrap strings with `__()` | ~15 strings |
+| `class-alw-checkout.php` | ✏️ Wrap strings with `__()` | ~4 strings |
+| `class-alw-shipping-method.php` | ✏️ Wrap strings with `__()` | ~10 strings |
+| `class-alw-server.php` | 🗑️ **Delete** — empty stub | 0 lines |
+| `readme.txt` | ✏️ Populate with plugin directory content | New content |
+
+---
+
+## Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| JS logic bug during extraction | Medium | High — map stops working | Extract JS **verbatim** first, change namespacing second. Test after each step. |
+| `wp_localize_script` data encoding issues | Low | Medium — broken config values | Use `json_encode` for values containing special characters. Test with API keys containing unusual chars. |
+| Google Maps callback timing | Low | High — map blank page | Keep the existing `injectMapsScript()` polling pattern unchanged. Only change how config values are read. |
+| CSS selectors referencing `ds-*` IDs | None | None | We keep all DOM IDs (`ds-billing-map`, `ds-shipping-info`, etc.) exactly as-is. Only JS variable names change. |
+| Translation string context | Low | Low — wrong translation | Use `_x()` for ambiguous strings (e.g., "Store" could mean "shop" or "save"). |
+
+---
+
+## Verification Plan
+
+> **Note**: These tests require a live WordPress + WooCommerce environment with a valid Google Maps API key. Recommended: use LocalWP or a staging site.
+
+### Test 1: JS Externalization
+
+1. Open the checkout page
+2. Open browser DevTools → **Network** tab
+3. **Verify**: `alw-checkout-map.js` and `alw-checkout-blocker.js` appear as external script requests (not inline)
+4. **Verify**: All checkout functionality works — map loads, pin placement, distance calculation, shipping panel updates, place order button blocking
+5. **Verify**: View Page Source → confirm no 500+ line inline `<script>` block from the plugin
+6. Reload the page → **Verify**: `.js` files return `304 Not Modified` (caching works)
+
+### Test 2: Namespace Consolidation
+
+1. Open the checkout page
+2. Open browser DevTools → **Console**
+3. Type `window.ALW` → **Verify**: the ALW namespace object exists with `recomputeShipping`, `initMap`, `mapsLoaded` methods
+4. Type `window.dsMap` → **Verify**: returns `undefined` (old globals cleaned up)
+5. Type `window.dsGeocoder` → **Verify**: returns `undefined`
+
+### Test 3: i18n
+
+1. Install **Loco Translate** plugin (free)
+2. Go to Loco Translate → Plugins → Find "Auto-Location for WooCommerce"
+3. **Verify**: the plugin appears with text domain `auto-location-woocommerce`
+4. Click to create a new translation → **Verify**: all ~50 strings are listed for translation
+5. Translate a few strings (e.g., "Shipping: FREE" → "Envío: GRATIS")
+6. Go to checkout → **Verify**: translated strings appear in the shipping panel
+
+### Test 4: Currency Symbol
+
+1. Go to WooCommerce → Settings → General → Currency → Change to **USD ($)**
+2. Go to checkout page → move map pin to a paid delivery distance
+3. **Verify**: shipping panel shows `$` symbol, NOT `₹`
+4. Change currency to **EUR (€)** → repeat
+5. **Verify**: shipping panel shows `€`
+
+### Test 5: Functional Regression
+
+1. Place the map pin within the free delivery zone → **Verify**: "Shipping: FREE" message with green color
+2. Place the map pin beyond max delivery distance → **Verify**: "DELIVERY NOT AVAILABLE" message with red color, "Place Order" button disabled
+3. Place the map pin in the paid zone → **Verify**: correct distance × rate calculation
+4. Click "Current location" button → **Verify**: map pans to GPS location, blue dot appears
+5. Complete a full order → **Verify**: order email contains Google Maps link with correct coordinates
+
+### Test 6: Empty Stub Cleanup
+
+1. **Verify**: `class-alw-server.php` has been deleted (or at minimum emptied and not referenced)
+2. **Verify**: No PHP errors or warnings on any page
+
+---
+
+## Phase 3 Deliverables Summary
+
+| # | Deliverable | File(s) | Complexity |
+|---|---|---|---|
+| 1 | Extract map JS to external file | `assets/js/alw-checkout-map.js` (new), `class-alw-frontend.php` | High |
+| 2 | Extract blocker JS to external file | `assets/js/alw-checkout-blocker.js` (new), `class-alw-frontend.php` | Medium |
+| 3 | Namespace all JS under `window.ALW` | `assets/js/alw-checkout-map.js` | Medium |
+| 4 | i18n: wrap all PHP strings | All 4 PHP files | Medium (tedious) |
+| 5 | i18n: pass JS strings via `wp_localize_script` | `class-alw-frontend.php` | Medium |
+| 6 | Dynamic currency symbol | `class-alw-frontend.php` + `alw-checkout-map.js` | Low |
+| 7 | Delete `class-alw-server.php` stub | `class-alw-server.php` | Low |
+| 8 | Version bump to 1.5.0 | `auto-location-woocommerce.php` | Low |

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Auto-Location for WooCommerce
  * Description: Calculates shipping based on distance with a dedicated settings panel.
- * Version: 1.4.0
+ * Version: 1.5.0
  * Author: Auto Computation
  * Author URI: https://autocomputation.com/
  * Text Domain: auto-location-woocommerce
@@ -36,7 +36,7 @@ add_action( 'plugins_loaded', function() {
     // --- WooCommerce Dependency Check ---
     if ( ! class_exists( 'WooCommerce' ) ) {
         add_action( 'admin_notices', function() {
-            echo '<div class="notice notice-error"><p><strong>Auto-Location for WooCommerce</strong> requires WooCommerce to be installed and active.</p></div>';
+            echo '<div class="notice notice-error"><p>' . esc_html__( 'Auto-Location for WooCommerce requires WooCommerce to be installed and active.', 'auto-location-woocommerce' ) . '</p></div>';
         });
         return;
     }
@@ -68,7 +68,18 @@ add_action( 'plugins_loaded', function() {
     if ( ! $alw_is_configured ) {
         if ( is_admin() ) {
             add_action( 'admin_notices', function() {
-                echo '<div class="notice notice-error"><p><strong>Auto-Location Plugin Paused:</strong> Please fill in all fields in the <a href="' . admin_url( 'admin.php?page=alw_settings' ) . '">Auto Location Settings</a> to enable checkout functionality.</p></div>';
+                printf(
+                    '<div class="notice notice-error"><p><strong>%1$s</strong> %2$s</p></div>',
+                    esc_html__( 'Auto-Location Plugin Paused:', 'auto-location-woocommerce' ),
+                    wp_kses(
+                        sprintf(
+                            /* translators: %s: URL to the settings page */
+                            __( 'Please fill in all fields in the <a href="%s">Auto Location Settings</a> to enable checkout functionality.', 'auto-location-woocommerce' ),
+                            admin_url( 'admin.php?page=alw_settings' )
+                        ),
+                        array( 'a' => array( 'href' => array() ) )
+                    )
+                );
             });
         }
         return;
@@ -119,7 +130,7 @@ add_action( 'plugins_loaded', function() {
         }
 
         if ( empty( $cust_lat ) || empty( $cust_lng ) ) {
-            wc_add_notice( 'We could not pinpoint your delivery location. Please try placing the pin on the map or providing a more detailed address.', 'error' );
+            wc_add_notice( __( 'We could not pinpoint your delivery location. Please try placing the pin on the map or providing a more detailed address.', 'auto-location-woocommerce' ), 'error' );
             return;
         }
 
@@ -128,7 +139,11 @@ add_action( 'plugins_loaded', function() {
 
         if ( $distance_km > ALW_MAX_KM ) {
             wc_add_notice(
-                sprintf( 'We do not deliver to this address — it is %.2f km away which exceeds our delivery radius of %s km.', $distance_km, ALW_MAX_KM ),
+                sprintf(
+                    /* translators: 1: actual distance in km, 2: maximum delivery distance in km */
+                    __( 'We do not deliver to this address — it is %.2f km away which exceeds our delivery radius of %s km.', 'auto-location-woocommerce' ),
+                    $distance_km, ALW_MAX_KM
+                ),
                 'error'
             );
         }

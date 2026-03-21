@@ -20,8 +20,8 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
     public function __construct( $instance_id = 0 ) {
         $this->id                 = 'alw_distance_shipping';
         $this->instance_id        = absint( $instance_id );
-        $this->method_title       = 'Distance-Based Shipping';
-        $this->method_description = 'Calculates shipping cost based on driving distance from store using Google Maps.';
+        $this->method_title       = __( 'Distance-Based Shipping', 'auto-location-woocommerce' );
+        $this->method_description = __( 'Calculates shipping cost based on driving distance from store using Google Maps.', 'auto-location-woocommerce' );
         $this->supports           = array(
             'shipping-zones',
             'instance-settings',
@@ -52,47 +52,47 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
     public function init_form_fields() {
         $this->instance_form_fields = array(
             'title' => array(
-                'title'   => 'Method Title',
+                'title'   => __( 'Method Title', 'auto-location-woocommerce' ),
                 'type'    => 'text',
-                'default' => 'Distance Shipping',
+                'default' => __( 'Distance Shipping', 'auto-location-woocommerce' ),
                 'desc_tip' => true,
-                'description' => 'The title shown to customers at checkout.',
+                'description' => __( 'The title shown to customers at checkout.', 'auto-location-woocommerce' ),
             ),
             'free_km' => array(
-                'title'       => 'Free Shipping Distance (km)',
+                'title'       => __( 'Free Shipping Distance (km)', 'auto-location-woocommerce' ),
                 'type'        => 'number',
                 'default'     => get_option( 'alw_free_km', 0 ),
                 'desc_tip'    => true,
-                'description' => 'Orders within this distance get free shipping.',
+                'description' => __( 'Orders within this distance get free shipping.', 'auto-location-woocommerce' ),
                 'custom_attributes' => array( 'step' => '0.01', 'min' => '0' ),
             ),
             'max_km' => array(
-                'title'       => 'Max Delivery Distance (km)',
+                'title'       => __( 'Max Delivery Distance (km)', 'auto-location-woocommerce' ),
                 'type'        => 'number',
                 'default'     => get_option( 'alw_max_km', 50 ),
                 'desc_tip'    => true,
-                'description' => 'Orders beyond this distance will not see this shipping option.',
+                'description' => __( 'Orders beyond this distance will not see this shipping option.', 'auto-location-woocommerce' ),
                 'custom_attributes' => array( 'step' => '0.01', 'min' => '0' ),
             ),
             'rate_per_km' => array(
-                'title'       => 'Rate Per KM',
+                'title'       => __( 'Rate Per KM', 'auto-location-woocommerce' ),
                 'type'        => 'number',
                 'default'     => get_option( 'alw_rate_per_km', 10 ),
                 'desc_tip'    => true,
-                'description' => 'Cost per kilometer beyond the free shipping distance.',
+                'description' => __( 'Cost per kilometer beyond the free shipping distance.', 'auto-location-woocommerce' ),
                 'custom_attributes' => array( 'step' => '0.01', 'min' => '0' ),
             ),
             'round_method' => array(
-                'title'   => 'Rounding Method',
+                'title'   => __( 'Rounding Method', 'auto-location-woocommerce' ),
                 'type'    => 'select',
                 'default' => get_option( 'alw_round_method', 'ceil' ),
                 'options' => array(
-                    'ceil'  => 'Ceil (Round Up)',
-                    'floor' => 'Floor (Round Down)',
-                    'round' => 'Standard Round',
+                    'ceil'  => __( 'Ceil (Round Up)', 'auto-location-woocommerce' ),
+                    'floor' => __( 'Floor (Round Down)', 'auto-location-woocommerce' ),
+                    'round' => __( 'Standard Round', 'auto-location-woocommerce' ),
                 ),
                 'desc_tip'    => true,
-                'description' => 'How to round the distance before calculating cost.',
+                'description' => __( 'How to round the distance before calculating cost.', 'auto-location-woocommerce' ),
             ),
         );
     }
@@ -153,10 +153,18 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
         // Calculate cost
         if ( $distance_km <= $free_km ) {
             $cost  = 0;
-            $label = sprintf( '%s (Free — %.2f km)', $this->title, $distance_km );
+            $label = sprintf(
+                /* translators: 1: shipping method title, 2: distance in km */
+                __( '%1$s (Free — %.2f km)', 'auto-location-woocommerce' ),
+                $this->title, $distance_km
+            );
         } else {
             $cost  = $bill_km * $rate_per_km;
-            $label = sprintf( '%s (%.2f km — %s)', $this->title, $distance_km, strip_tags( wc_price( $cost ) ) );
+            $label = sprintf(
+                /* translators: 1: shipping method title, 2: distance in km, 3: formatted price */
+                __( '%1$s (%.2f km — %3$s)', 'auto-location-woocommerce' ),
+                $this->title, $distance_km, strip_tags( wc_price( $cost ) )
+            );
         }
 
         // Add rate to WooCommerce (coexists with other shipping methods)

@@ -25,7 +25,9 @@ class ALW_Admin_Settings {
 
     public function add_admin_menu() {
         add_menu_page(
-            'Auto Location Settings', 'Auto Location', 'manage_options', 'alw_settings', 
+            __( 'Auto Location Settings', 'auto-location-woocommerce' ),
+            __( 'Auto Location', 'auto-location-woocommerce' ),
+            'manage_options', 'alw_settings', 
             array( $this, 'settings_page_html' ), 'dashicons-location', 56
         );
     }
@@ -53,24 +55,24 @@ class ALW_Admin_Settings {
             'sanitize_callback' => array( $this, 'sanitize_round_method' ),
         ));
 
-        add_settings_section( 'alw_general_section', 'General Configuration', null, 'alw_settings' );
-        add_settings_section( 'alw_rules_section', 'Shipping Rules', null, 'alw_settings' );
+        add_settings_section( 'alw_general_section', __( 'General Configuration', 'auto-location-woocommerce' ), null, 'alw_settings' );
+        add_settings_section( 'alw_rules_section', __( 'Shipping Rules', 'auto-location-woocommerce' ), null, 'alw_settings' );
 
-        add_settings_field( 'alw_google_api_key', 'Google Maps API Key', array( $this, 'render_api_key_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_google_api_key' ) );
-        add_settings_field( 'alw_store_lat', 'Store Latitude', array( $this, 'render_text_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_store_lat' ) );
-        add_settings_field( 'alw_store_lng', 'Store Longitude', array( $this, 'render_text_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_store_lng' ) );
+        add_settings_field( 'alw_google_api_key', __( 'Google Maps API Key', 'auto-location-woocommerce' ), array( $this, 'render_api_key_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_google_api_key' ) );
+        add_settings_field( 'alw_store_lat', __( 'Store Latitude', 'auto-location-woocommerce' ), array( $this, 'render_text_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_store_lat' ) );
+        add_settings_field( 'alw_store_lng', __( 'Store Longitude', 'auto-location-woocommerce' ), array( $this, 'render_text_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_store_lng' ) );
 
-        add_settings_field( 'alw_free_km', 'Free Shipping Distance (km)', array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_free_km' ) );
-        add_settings_field( 'alw_max_km', 'Max Delivery Distance (km)', array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_max_km' ) );
-        add_settings_field( 'alw_rate_per_km', 'Rate Per KM', array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_rate_per_km' ) );
-        add_settings_field( 'alw_round_method', 'Rounding Method', array( $this, 'render_select_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_round_method' ) );
+        add_settings_field( 'alw_free_km', __( 'Free Shipping Distance (km)', 'auto-location-woocommerce' ), array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_free_km' ) );
+        add_settings_field( 'alw_max_km', __( 'Max Delivery Distance (km)', 'auto-location-woocommerce' ), array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_max_km' ) );
+        add_settings_field( 'alw_rate_per_km', __( 'Rate Per KM', 'auto-location-woocommerce' ), array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_rate_per_km' ) );
+        add_settings_field( 'alw_round_method', __( 'Rounding Method', 'auto-location-woocommerce' ), array( $this, 'render_select_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_round_method' ) );
     }
 
     public function render_api_key_field( $args ) {
         $option = get_option( $args['id'] );
         ?>
         <input type="password" name="<?php echo esc_attr( $args['id'] ); ?>" value="<?php echo esc_attr( $option ); ?>" class="regular-text" autocomplete="off" />
-        <p class="description">Required: Geocoding API, Maps JavaScript API, Places API, and Directions API.</p>
+        <p class="description"><?php esc_html_e( 'Required: Geocoding API, Maps JavaScript API, Places API, and Directions API.', 'auto-location-woocommerce' ); ?></p>
 
         <div class="notice notice-warning inline" style="margin: 10px 0; padding: 8px 12px;">
             <p><strong>&#9888;&#65039; Security:</strong> Restrict this API key in the
@@ -80,7 +82,7 @@ class ALW_Admin_Settings {
         </div>
         
         <div class="alw-tutorial-box">
-            <h3>How to get your Google Maps API Key</h3>
+            <h3><?php esc_html_e( 'How to get your Google Maps API Key', 'auto-location-woocommerce' ); ?></h3>
             <p>1. Go to the Google Maps Platform Console: <br>
                 <a href="https://developers.google.com/maps/documentation/embed/get-api-key?setupProd=prerequisites" target="_blank" class="alw-tutorial-link">
                     https://developers.google.com/maps/documentation/embed/get-api-key?setupProd=prerequisites <span class="dashicons dashicons-external"></span>
@@ -96,7 +98,7 @@ class ALW_Admin_Settings {
                     allowfullscreen>
                 </iframe>
             </div>
-            <p class="description" style="margin-top: 10px;">Ensure you enable billing on the Google Cloud Project, otherwise the API will not work.</p>
+            <p class="description" style="margin-top: 10px;"><?php esc_html_e( 'Ensure you enable billing on the Google Cloud Project, otherwise the API will not work.', 'auto-location-woocommerce' ); ?></p>
         </div>
         <?php
     }
@@ -114,7 +116,7 @@ class ALW_Admin_Settings {
 
     public function render_select_field( $args ) {
         $option = get_option( $args['id'] );
-        $items = array( 'ceil' => 'Ceil (Round Up)', 'floor' => 'Floor (Round Down)', 'round' => 'Standard Round' );
+        $items = array( 'ceil' => __( 'Ceil (Round Up)', 'auto-location-woocommerce' ), 'floor' => __( 'Floor (Round Down)', 'auto-location-woocommerce' ), 'round' => __( 'Standard Round', 'auto-location-woocommerce' ) );
         echo '<select name="' . esc_attr( $args['id'] ) . '">';
         foreach ( $items as $key => $val ) {
             $selected = ( $option == $key ) ? 'selected="selected"' : '';
@@ -132,7 +134,7 @@ class ALW_Admin_Settings {
                 <?php
                 settings_fields( 'alw_settings_group' );
                 do_settings_sections( 'alw_settings' );
-                submit_button( 'Save Settings' );
+                submit_button( __( 'Save Settings', 'auto-location-woocommerce' ) );
                 ?>
             </form>
         </div>
@@ -144,7 +146,7 @@ class ALW_Admin_Settings {
     public function sanitize_latitude( $value ) {
         $value = floatval( $value );
         if ( $value < -90 || $value > 90 ) {
-            add_settings_error( 'alw_store_lat', 'invalid_lat', 'Latitude must be between -90 and 90.' );
+            add_settings_error( 'alw_store_lat', 'invalid_lat', __( 'Latitude must be between -90 and 90.', 'auto-location-woocommerce' ) );
             return get_option( 'alw_store_lat' );
         }
         return $value;
@@ -153,7 +155,7 @@ class ALW_Admin_Settings {
     public function sanitize_longitude( $value ) {
         $value = floatval( $value );
         if ( $value < -180 || $value > 180 ) {
-            add_settings_error( 'alw_store_lng', 'invalid_lng', 'Longitude must be between -180 and 180.' );
+            add_settings_error( 'alw_store_lng', 'invalid_lng', __( 'Longitude must be between -180 and 180.', 'auto-location-woocommerce' ) );
             return get_option( 'alw_store_lng' );
         }
         return $value;
@@ -168,11 +170,11 @@ class ALW_Admin_Settings {
         $value = floatval( $value );
         $free_km = floatval( get_option( 'alw_free_km', 0 ) );
         if ( $value <= 0 ) {
-            add_settings_error( 'alw_max_km', 'invalid_max', 'Max delivery distance must be greater than 0.' );
+            add_settings_error( 'alw_max_km', 'invalid_max', __( 'Max delivery distance must be greater than 0.', 'auto-location-woocommerce' ) );
             return get_option( 'alw_max_km' );
         }
         if ( $value < $free_km ) {
-            add_settings_error( 'alw_max_km', 'max_lt_free', 'Max distance cannot be less than the free shipping distance.' );
+            add_settings_error( 'alw_max_km', 'max_lt_free', __( 'Max distance cannot be less than the free shipping distance.', 'auto-location-woocommerce' ) );
             return get_option( 'alw_max_km' );
         }
         return $value;
