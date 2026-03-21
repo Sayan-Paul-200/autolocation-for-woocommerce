@@ -1,0 +1,228 @@
+# Phase 2: WooCommerce Architecture Compliance — `v1.4.0` (Deep Dive)
+
+> **Reviewer Role**: Senior WordPress + WooCommerce developer and Google Maps development expert (10+ years)
+
+---
+
+## 2.1 The Core Problem: Not a Real Shipping Method
+
+### How WooCommerce Shipping Is Supposed to Work
+
+WooCommerce has a deliberate, layered shipping architecture:
+
+```mermaid
+graph TD
+    A[Shipping Zones] --> B[Shipping Methods]
+    B --> C[Rate Calculation]
+    C --> D[Package Rates]
+    D --> E[Checkout Display]
+
+    A -->|"e.g. India, Local, International"| A
+    B -->|"Flat Rate, Free Shipping, ALW Distance"| B
+    C -->|"calculate_shipping()"| C
+    D -->|"woocommerce_package_rates filter"| D
+```
+
+**Shipping Zones** → Define geographic regions (e.g., "Local", "India", "International")  
+**Shipping Methods** → Plugins that extend `WC_Shipping_Method` and register themselves  
+**Rate Calculation** → Each method's `calculate_shipping()` method adds rates to the package  
+**Display** → WooCommerce presents all available rates to the customer  
+
+### What ALW Does Instead
+
+ALW completely skips the first three layers. It hooks directly into the `woocommerce_package_rates` filter (the 4th layer) and **replaces ALL rates** with its own single rate:
+
+```php
+// Current approach (class-alw-shipping.php:L8)
+add_filter( 'woocommerce_package_rates', array( $this, 'calculate_distance_rate' ), 20, 2 );
+
+// Inside calculate_distance_rate():
+return array( $rate_id => $rate );  // Wipes out ALL other shipping methods
+```
+
+### Why This Is a Problem
+
+| Issue | Impact |
+|-------|--------|
+| **⊗ Destroys other methods** | If the store also has "Local Pickup" or "Flat Rate", they're silently removed. The customer only sees the distance rate. |
+| **⊗ Invisible in WooCommerce settings** | Admin can't find it under WooCommerce → Settings → Shipping. It's a ghost method — works but can't be managed through the standard interface. |
+| **⊗ No Shipping Zone support** | Can't configure different rules for different regions (e.g., different rate_per_km for urban vs. rural). |
+| **⊗ No shipping class support** | Can't apply distance shipping only to certain product categories (e.g., "Food" uses distance, "Digital" is free). |
+| **⊗ Breaks 3rd-party integrations** | Shipping label plugins, multi-carrier plugins, and analytics tools expect `WC_Shipping_Method` instances. ALW doesn't appear in their method lists. |
+| **⊗ Rate caching conflicts** | WooCommerce caches rates per session using shipping method IDs. ALW's filter-based approach bypasses this, potentially causing stale or flickering rates. |
+
+### The Fix: Extend `WC_Shipping_Method`
+
+We'll create a proper WooCommerce shipping method class that:
+
+1. **Extends `WC_Shipping_Method`** — the standard WooCommerce base class
+2. **Registers via `woocommerce_shipping_methods` filter** — appears in WC settings
+3. **Implements `calculate_shipping( $package )`** — the standard entry point
+4. **Adds rates via `$this->add_rate()`** — the standard WooCommerce API
+5. **Coexists with other methods** — doesn't wipe out Flat Rate, Free Shipping, etc.
+
+```php
+class ALW_Shipping_Method extends WC_Shipping_Method {
+
+    public function __construct( $instance_id = 0 ) {
+        $this->id                 = 'alw_distance_shipping';
+        $this->instance_id        = absint( $instance_id );
+        $this->method_title       = 'Distance Shipping';
+        $this->method_description = 'Calculate shipping cost based on distance from store.';
+        $this->supports           = array( 'shipping-zones', 'instance-settings' );
+        $this->init();
+    }
+
+    public function calculate_shipping( $package = array() ) {
+        // ... distance logic (reused from ALW_Shipping_Calculator)
+        $this->add_rate( array(
+            'id'    => $this->get_rate_id(),
+            'label' => $label,
+            'cost'  => $cost,
+        ));
+    }
+}
+```
+
+### Registration Flow
+
+```php
+// In auto-location-woocommerce.php
+add_filter( 'woocommerce_shipping_methods', function( $methods ) {
+    $methods['alw_distance_shipping'] = 'ALW_Shipping_Method';
+    return $methods;
+});
+```
+
+After this, the admin experience becomes:
+
+1. Go to **WooCommerce → Settings → Shipping → Shipping Zones**
+2. Click on a zone (e.g., "Local Delivery")
+3. Click **"Add shipping method"**
+4. Select **"Distance Shipping"** from the dropdown
+5. Configure rate_per_km, free_km, max_km **per zone** (instance settings)
+
+### What Happens to [ALW_Shipping_Calculator](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#4-175)?
+
+It will be **refactored into `ALW_Distance_Service`** — a helper class containing only the distance computation logic:
+- [compute_server_distance()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#94-105)
+- [get_directions_distance()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#128-152)
+- [geocode_address()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#153-174)
+- [get_haversine_km()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#119-127)
+- [validate_distance_limit()](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#63-91)
+
+Both the new `ALW_Shipping_Method` and the frontend will call this service. This follows the **Single Responsibility Principle** — the service computes distances, the shipping method applies WooCommerce pricing logic.
+
+---
+
+## 2.2 HPOS Compatibility
+
+### What Is HPOS?
+
+**High-Performance Order Storage (HPOS)** is WooCommerce's migration from storing orders in the `wp_posts` / `wp_postmeta` tables to dedicated `wc_orders` / `wc_orders_meta` tables. As of WooCommerce 8.2+, HPOS is the default for new installations.
+
+### Why It Matters for ALW
+
+Our plugin stores order metadata via:
+
+```php
+// class-alw-checkout.php:L55-59
+$order->update_meta_data( '_shipping_lat', ... );
+$order->update_meta_data( '_shipping_lng', ... );
+```
+
+This code uses CRUD methods (`update_meta_data`), which are HPOS-compatible. However, WooCommerce still shows an **incompatibility warning** in the admin if the plugin doesn't explicitly declare support. Store owners see a scary "This plugin is not compatible with HPOS" message.
+
+### The Fix
+
+Add the compatibility declaration in the main plugin file:
+
+```php
+add_action( 'before_woocommerce_init', function() {
+    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+            'custom_order_tables', __FILE__, true
+        );
+    }
+});
+```
+
+This tells WooCommerce: "This plugin has been tested with HPOS and works correctly." The warning disappears.
+
+> [!NOTE]
+> This is a one-line declaration, but it signals to store owners and the WooCommerce ecosystem that the plugin is actively maintained and compatible with modern WooCommerce.
+
+---
+
+## 2.3 WooCommerce Dependency Check
+
+### Current Behavior
+
+If WooCommerce is deactivated or not installed, and this plugin is active, it will throw **fatal errors** because it calls:
+- `is_checkout()` — undefined
+- `WC_Shipping_Rate` — class not found
+- `wc_add_notice()` — undefined
+- `wc_price()` — undefined
+
+The store goes down entirely — a white screen of death.
+
+### The Fix
+
+Add a dependency check that runs before ANY plugin logic:
+
+```php
+// At the top of auto-location-woocommerce.php, after the plugin header
+add_action( 'plugins_loaded', function() {
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        add_action( 'admin_notices', function() {
+            echo '<div class="notice notice-error"><p><strong>Auto-Location for WooCommerce</strong> '
+               . 'requires WooCommerce to be installed and active.</p></div>';
+        });
+        return; // Bail out — don't load any plugin functionality
+    }
+    // ... proceed with normal plugin initialization
+});
+```
+
+Alternatively, use the `Requires Plugins` header (WordPress 6.5+):
+
+```php
+/**
+ * Plugin Name: Auto-Location for WooCommerce
+ * Requires Plugins: woocommerce
+ */
+```
+
+This tells WordPress to prevent activation entirely if WooCommerce isn't present.
+
+---
+
+## Phase 2 Deliverables Summary
+
+| # | Deliverable | File(s) | Complexity |
+|---|-------------|---------|------------|
+| 1 | Create `ALW_Shipping_Method extends WC_Shipping_Method` | `class-alw-shipping-method.php` (new) | High |
+| 2 | Refactor [ALW_Shipping_Calculator](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php#4-175) → `ALW_Distance_Service` | [class-alw-shipping.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/includes/class-alw-shipping.php) → rename | Medium |
+| 3 | Register shipping method + restructure initialization | [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php) | Medium |
+| 4 | Declare HPOS compatibility | [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php) | Low |
+| 5 | Add WooCommerce dependency check | [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php) | Low |
+| 6 | Version bump to 1.4.0 | [auto-location-woocommerce.php](file:///d:/Z_Work/Sayan/sugar%20story/auto-location-woocommerce/auto-location-woocommerce.php) | Low |
+
+---
+
+## Architecture Before vs. After
+
+```mermaid
+graph LR
+    subgraph "Current (v1.3.0)"
+        A1[ALW_Shipping_Calculator] -->|"hooks into"| B1[woocommerce_package_rates]
+        B1 -->|"replaces ALL rates"| C1[Checkout]
+    end
+
+    subgraph "After (v1.4.0)"
+        A2[ALW_Distance_Service] -->|"provides distance"| B2[ALW_Shipping_Method]
+        B2 -->|"extends"| C2[WC_Shipping_Method]
+        C2 -->|"registered in"| D2[Shipping Zones]
+        D2 -->|"adds rate alongside others"| E2[Checkout]
+    end
+```
