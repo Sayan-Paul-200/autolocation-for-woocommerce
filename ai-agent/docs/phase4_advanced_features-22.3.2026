@@ -1,0 +1,610 @@
+# Phase 4: Advanced Features — `v2.0.0` (Deep Dive)
+
+> **Reviewer Role**: Senior WordPress + WooCommerce developer and Google Maps development expert (10+ years)
+
+---
+
+## Why Phase 4 Matters
+
+Phases 1–3 built a **correct, secure, translatable** plugin. But it's still simplistic in pricing and UX. Phase 4 transforms it from a working tool into a **competitive product** by adding the four features most requested by WooCommerce store owners running distance-based delivery.
+
+| Feature | Business Impact |
+|---|---|
+| **Distance Tiers** | Lets stores charge different rates for different distance bands — essential for restaurants, grocery, and pharmacy delivery |
+| **Admin Map Picker** | Eliminates manual lat/lng entry — store owners shouldn't need to Google their own coordinates |
+| **Address Autocomplete** | Reduces address entry errors by 60–80% (Google data) — fewer failed deliveries, better UX |
+| **Delivery Radius Visualization** | Customers instantly see whether their location is deliverable — reduces checkout abandonment |
+
+This phase is a **major version bump** (v1.5.0 → v2.0.0) because distance tiers change the pricing data model — the `rate_per_km` single value is replaced by a tiered array, which is a breaking change for any code or integration that reads that setting directly.
+
+---
+
+## 4.1 Distance Brackets / Tiered Pricing
+
+### The Current Model
+
+```
+cost = round(distance_km) × rate_per_km    (if distance > free_km)
+cost = 0                                    (if distance ≤ free_km)
+cost = null (unavailable)                   (if distance > max_km)
+```
+
+One rate per km. No brackets. This means a 5km delivery and a 25km delivery both cost the same per-km rate, which doesn't match real-world delivery economics where longer distances are proportionally more expensive.
+
+### The New Model
+
+```
+tiers = [
+  { from: 0,  to: 5,  rate: 0,  flat: 0   },   // Free
+  { from: 5,  to: 15, rate: 10, flat: 0   },   // ₹10/km
+  { from: 15, to: 30, rate: 15, flat: 50  },   // ₹15/km + ₹50 flat
+]
+```
+
+For a 20km delivery:
+- First 5km: Free
+- Next 10km (5→15): 10 × ₹10 = ₹100
+- Next 5km (15→20): 5 × ₹15 + ₹50 = ₹125
+- **Total: ₹225**
+
+This is a **cumulative tiered model** — each tier applies to the distance within its bracket, not the total distance. This is fairer and is the model used by Uber, food delivery apps, and logistics companies.
+
+### Backend Implementation
+
+#### Data Model
+
+The tiers are stored as a serialized array in WooCommerce instance settings:
+
+```php
+// In ALW_Shipping_Method::init_form_fields()
+'pricing_mode' => array(
+    'title'   => __( 'Pricing Mode', 'auto-location-woocommerce' ),
+    'type'    => 'select',
+    'default' => 'flat_rate',
+    'options' => array(
+        'flat_rate' => __( 'Flat Rate per KM', 'auto-location-woocommerce' ),
+        'tiered'    => __( 'Distance Tiers', 'auto-location-woocommerce' ),
+    ),
+),
+'distance_tiers' => array(
+    'title' => __( 'Distance Tiers', 'auto-location-woocommerce' ),
+    'type'  => 'alw_tiers',  // Custom field type (see below)
+    'default' => array(),
+),
+```
+
+The `pricing_mode` toggle lets stores keep using the simple flat-rate model if they prefer. Tiers are opt-in, backward compatible.
+
+#### Custom Field Type: Repeater Table
+
+WooCommerce shipping method settings support custom field types via `generate_<type>_html()` and `validate_<type>_field()`. We render a repeater table in the instance settings modal:
+
+```php
+public function generate_alw_tiers_html( $key, $data ) {
+    // Renders an HTML table with columns: From (km), To (km), Rate/km, Flat Fee
+    // Each row has inputs + a "Remove" button
+    // A "＋ Add Tier" button at the bottom appends new rows via JS
+    // Uses hidden input with JSON value for form submission
+}
+
+public function validate_alw_tiers_field( $key, $value ) {
+    // Decodes JSON, validates each tier:
+    //   - from < to
+    //   - no gaps between tiers (tier[n].to === tier[n+1].from)
+    //   - rates >= 0, flat fees >= 0
+    //   - at least one tier
+    // Returns sanitized array or WC error
+}
+```
+
+#### Calculation Logic
+
+The `calculate_shipping()` method changes:
+
+```php
+// Current (v1.5.0)
+$cost = $bill_km * $rate_per_km;
+
+// New (v2.0.0)
+$pricing_mode = $this->get_option( 'pricing_mode', 'flat_rate' );
+
+if ( $pricing_mode === 'tiered' ) {
+    $tiers = $this->get_option( 'distance_tiers', array() );
+    $cost  = $this->calculate_tiered_cost( $distance_km, $tiers );
+} else {
+    // Legacy flat-rate path — unchanged
+    $cost = $bill_km * $rate_per_km;
+}
+```
+
+The `calculate_tiered_cost()` method:
+
+```php
+private function calculate_tiered_cost( $distance_km, $tiers ) {
+    $total = 0;
+    $remaining = $distance_km;
+
+    foreach ( $tiers as $tier ) {
+        $from = floatval( $tier['from'] );
+        $to   = floatval( $tier['to'] );
+        $rate = floatval( $tier['rate'] );
+        $flat = floatval( $tier['flat'] );
+
+        if ( $remaining <= 0 ) break;
+        if ( $distance_km <= $from ) continue;
+
+        $tier_km = min( $remaining, $to - $from );
+        $total += ( $tier_km * $rate ) + $flat;
+        $remaining -= $tier_km;
+    }
+
+    return $total;
+}
+```
+
+#### Frontend Sync
+
+The checkout map JS also needs to know about tiers for real-time cost preview. Pass the tiers via `wp_localize_script`:
+
+```php
+// In class-alw-frontend.php
+'pricing_mode'   => $pricing_mode,  // 'flat_rate' or 'tiered'
+'distance_tiers' => $tiers_array,   // [{from, to, rate, flat}, ...]
+```
+
+And update `calculateShippingFromDistance()` in `alw-checkout-map.js`:
+
+```javascript
+function calculateShippingFromDistance(distance_km) {
+    if (distance_km > MAX_KM) return { cost: null, raw_km: distance_km };
+    if (distance_km <= FREE_KM && config.pricing_mode !== 'tiered')
+        return { cost: 0, rounded_km: roundKm(distance_km), raw_km: distance_km };
+
+    if (config.pricing_mode === 'tiered' && config.distance_tiers) {
+        var total = 0, remaining = distance_km;
+        config.distance_tiers.forEach(function(tier) {
+            if (remaining <= 0 || distance_km <= tier.from) return;
+            var tkm = Math.min(remaining, tier.to - tier.from);
+            total += (tkm * tier.rate) + tier.flat;
+            remaining -= tkm;
+        });
+        return { cost: Math.round(total * 100) / 100, raw_km: distance_km };
+    }
+
+    // Legacy flat rate
+    var rounded_km = roundKm(distance_km);
+    return { cost: rounded_km * RATE_PER_KM, rounded_km: rounded_km, raw_km: distance_km };
+}
+```
+
+#### WooCommerce Instance Settings UI Challenge
+
+WooCommerce's shipping method instance settings modal is intentionally simple — it supports basic field types (`text`, `number`, `select`, `checkbox`). A repeater table requires custom JavaScript to handle add/remove rows.
+
+The approach:
+1. Register a custom field type `alw_tiers` via `generate_alw_tiers_html()`
+2. Render the repeater table with a hidden `<textarea>` holding JSON
+3. Add a small inline JS block (or a new `assets/js/alw-admin-tiers.js`) that handles add/remove rows and updates the JSON textarea on change
+4. `validate_alw_tiers_field()` decodes and validates the JSON on save
+
+This pattern is used by other WooCommerce plugins (e.g., Table Rate Shipping) and is well-established.
+
+---
+
+## 4.2 Admin Map Picker for Store Coordinates
+
+### The Current Experience
+
+Store owners must manually enter latitude and longitude:
+
+```
+Store Latitude:  [22.5726]
+Store Longitude: [88.3639]
+```
+
+Most store owners don't know their coordinates. They have to go to Google Maps, right-click their store, click "What's here?", copy the numbers — a friction-heavy, error-prone process.
+
+### The New Experience
+
+An interactive map embedded directly in the admin settings page:
+
+```
+┌──────────────────────────────────────────────┐
+│                                              │
+│              [Google Map]                    │
+│                                              │
+│          📍 ← draggable pin                  │
+│                                              │
+│     [ 📍 Use My Location ]                   │
+│                                              │
+└──────────────────────────────────────────────┘
+  Store Latitude:  [22.5726]  ← auto-filled
+  Store Longitude: [88.3639]  ← auto-filled
+```
+
+Admin clicks/drags the map → lat/lng fields update automatically. Or clicks "Use My Location" for GPS-based auto-fill.
+
+### Implementation
+
+#### [NEW] `assets/js/alw-admin-map.js`
+
+A lightweight admin-only script (~100 lines):
+
+```javascript
+(function($, config) {
+    'use strict';
+
+    var map, marker;
+    var latField = document.querySelector('input[name="alw_store_lat"]');
+    var lngField = document.querySelector('input[name="alw_store_lng"]');
+
+    function initAdminMap() {
+        var lat = parseFloat(latField.value) || 0;
+        var lng = parseFloat(lngField.value) || 0;
+        var hasCoords = (lat !== 0 || lng !== 0);
+        var center = hasCoords ? { lat: lat, lng: lng } : { lat: 20.5937, lng: 78.9629 }; // Default: India center
+        var zoom = hasCoords ? 15 : 5;
+
+        var mapEl = document.getElementById('alw-admin-map');
+        if (!mapEl) return;
+
+        map = new google.maps.Map(mapEl, { center: center, zoom: zoom, gestureHandling: 'cooperative' });
+        marker = new google.maps.Marker({ position: center, map: map, draggable: true, title: 'Store Location' });
+
+        // Drag end → update fields
+        marker.addListener('dragend', function(e) {
+            latField.value = e.latLng.lat().toFixed(7);
+            lngField.value = e.latLng.lng().toFixed(7);
+        });
+
+        // Click map → move pin
+        map.addListener('click', function(e) {
+            marker.setPosition(e.latLng);
+            latField.value = e.latLng.lat().toFixed(7);
+            lngField.value = e.latLng.lng().toFixed(7);
+        });
+
+        // Field change → move pin
+        function syncFromFields() {
+            var lat = parseFloat(latField.value);
+            var lng = parseFloat(lngField.value);
+            if (isFinite(lat) && isFinite(lng)) {
+                var pos = new google.maps.LatLng(lat, lng);
+                marker.setPosition(pos);
+                map.panTo(pos);
+            }
+        }
+        latField.addEventListener('change', syncFromFields);
+        lngField.addEventListener('change', syncFromFields);
+    }
+
+    // Inject Google Maps script and init
+    if (typeof google !== 'undefined' && google.maps) {
+        initAdminMap();
+    } else {
+        var s = document.createElement('script');
+        s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(config.api_key);
+        s.onload = initAdminMap;
+        document.head.appendChild(s);
+    }
+})(jQuery, window.alw_admin_config || {});
+```
+
+#### [MODIFY] `class-alw-admin.php`
+
+Changes to the admin settings page:
+
+1. **Enqueue admin JS**: New `wp_enqueue_script('alw-admin-map', ...)` on the settings page only
+2. **Pass config**: `wp_localize_script('alw-admin-map', 'alw_admin_config', ['api_key' => ...])`
+3. **Render map div**: Add `<div id="alw-admin-map" style="height:350px;margin:15px 0;border-radius:8px;"></div>` between the API key field and the lat/lng fields
+4. **Add "Use My Location" button**: Geolocation button for admin
+
+#### [MODIFY] `assets/css/alw-admin.css`
+
+Add styles for the admin map container and the location button.
+
+### Google Maps API Key Consideration
+
+The admin map uses the same API key as the frontend. Since both are on the same domain, HTTP referrer restrictions will work for both. No additional API key configuration is needed.
+
+---
+
+## 4.3 Address Autocomplete (Places API)
+
+### The Current Experience
+
+Customers type their billing address manually. The plugin then geocodes the address to get coordinates, or the customer uses the map to place a pin.
+
+### The New Experience
+
+As the customer types in `billing_address_1`, Google Places Autocomplete suggests matching addresses. Selecting a suggestion:
+
+1. Auto-fills all address fields (address, city, state, postcode, country)
+2. Pans the map to the selected location
+3. Triggers distance recalculation
+4. Sets hidden lat/lng fields
+
+### Implementation
+
+#### [MODIFY] `alw-checkout-map.js`
+
+The Places library is already loaded (the Maps URL includes `&libraries=places`). Adding Autocomplete is ~40 lines:
+
+```javascript
+function initPlacesAutocomplete() {
+    var addressInput = document.querySelector('input[name="billing_address_1"]');
+    if (!addressInput || !google.maps.places) return;
+
+    var autocomplete = new google.maps.places.Autocomplete(addressInput, {
+        types: ['address'],
+        fields: ['address_components', 'geometry', 'formatted_address', 'name'],
+        // Optional: restrict to specific country
+        // componentRestrictions: { country: config.store_country || 'in' },
+    });
+
+    autocomplete.addListener('place_changed', function() {
+        var place = autocomplete.getPlace();
+        if (!place || !place.geometry) return;
+
+        var lat = place.geometry.location.lat();
+        var lng = place.geometry.location.lng();
+
+        // Set hidden fields
+        setHiddenLatLng(lat, lng);
+
+        // Auto-fill address components
+        fillAddressFromPlace(place);
+
+        // Pan map
+        if (map) {
+            map.panTo(place.geometry.location);
+            map.setZoom(17);
+        }
+
+        // Recompute shipping
+        recomputeAndShow();
+    });
+
+    // Prevent form submission on Enter key in autocomplete
+    addressInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            // Check if pac-container (autocomplete dropdown) is visible
+            var pac = document.querySelector('.pac-container');
+            if (pac && pac.style.display !== 'none') {
+                e.preventDefault();
+            }
+        }
+    });
+}
+
+function fillAddressFromPlace(place) {
+    var components = place.address_components || [];
+    function getComp(type) {
+        for (var i = 0; i < components.length; i++) {
+            if (components[i].types.indexOf(type) !== -1) return components[i];
+        }
+        return null;
+    }
+
+    var streetNumber = getComp('street_number');
+    var route = getComp('route');
+    var locality = getComp('locality') || getComp('postal_town');
+    var admin = getComp('administrative_area_level_1');
+    var postal = getComp('postal_code');
+    var country = getComp('country');
+
+    var addr1 = '';
+    if (streetNumber && route) addr1 = streetNumber.long_name + ' ' + route.long_name;
+    else if (route) addr1 = route.long_name;
+    else addr1 = place.formatted_address || '';
+
+    var fields = {
+        'billing_address_1': addr1,
+        'billing_city': locality ? locality.long_name : '',
+        'billing_postcode': postal ? postal.long_name : '',
+    };
+
+    Object.keys(fields).forEach(function(name) {
+        var el = document.querySelector('input[name="' + name + '"]');
+        if (el && fields[name]) el.value = fields[name];
+    });
+
+    // State and country use <select> — trigger change events
+    var stateEl = document.querySelector('select[name="billing_state"], input[name="billing_state"]');
+    var countryEl = document.querySelector('select[name="billing_country"], input[name="billing_country"]');
+    if (stateEl && admin) { stateEl.value = admin.short_name; stateEl.dispatchEvent(new Event('change')); }
+    if (countryEl && country) { countryEl.value = country.short_name; countryEl.dispatchEvent(new Event('change')); }
+}
+```
+
+Call `initPlacesAutocomplete()` inside `initMap()` after the map is created.
+
+### UX Considerations
+
+| Issue | Solution |
+|---|---|
+| **Enter key submits form instead of selecting suggestion** | Intercept Enter when `.pac-container` is visible |
+| **Autocomplete conflicts with map idle reverse geocoding** | When a place is selected via autocomplete, set a flag to skip the next reverse geocode (the address is already correct) |
+| **Country restriction** | Optional config: `config.autocomplete_country` can restrict suggestions to the store's country |
+| **Session tokens** | Google Places Autocomplete uses `AutocompleteSessionToken` internally — no manual session management needed. This reduces API costs by batching autocomplete requests into sessions. |
+
+### API Cost Impact
+
+Google Places Autocomplete pricing (as of 2024):
+- **Autocomplete (Per Session)**: $2.83 per 1,000 sessions
+- **Place Details (basic fields)**: Included in Autocomplete session
+- Only charged when a suggestion is selected — abandoned sessions are free
+
+This is typically far cheaper than manual geocoding because:
+1. Fewer failed geocoding attempts (correctly formatted addresses)
+2. The session model batches multiple keystrokes into one billable event
+
+---
+
+## 4.4 Delivery Radius Visualization
+
+### The Current Experience
+
+The customer sees a map with a store marker and their delivery pin. There's no visual indicator of where the delivery boundary is — they only find out when the panel says "DELIVERY NOT AVAILABLE".
+
+### The New Experience
+
+A semi-transparent circle centered on the store showing the max delivery radius:
+
+```
+        ┌─────────────────────────────┐
+        │      ·  ·  ·  ·  ·         │
+        │    ·                ·       │
+        │   ·      🔵 Store    ·      │
+        │   ·                 ·       │
+        │    ·    📍 Pin      ·       │
+        │      ·  ·  ·  ·  ·         │
+        │              ← radius circle │
+        │                             │
+        └─────────────────────────────┘
+```
+
+The circle uses a soft semi-transparent fill so it doesn't obscure map details, with a subtle stroke at the boundary edge.
+
+### Implementation
+
+#### [MODIFY] `alw-checkout-map.js`
+
+Add circle rendering inside `initMap()`, after the store marker:
+
+```javascript
+// Delivery radius visualization
+var deliveryCircle = new google.maps.Circle({
+    map: map,
+    center: storeLatLng,
+    radius: MAX_KM * 1000,  // Convert km to meters
+    fillColor: '#4285F4',
+    fillOpacity: 0.06,       // Very subtle fill
+    strokeColor: '#4285F4',
+    strokeOpacity: 0.3,
+    strokeWeight: 2,
+    clickable: false,        // Don't interfere with map clicks
+    zIndex: 1,               // Behind markers
+});
+```
+
+That's it — 10 lines. `google.maps.Circle` handles all the projection math. The circle automatically adjusts its visual shape for map projection at different zoom levels.
+
+### Visual Design Decisions
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| `fillOpacity: 0.06` | Nearly transparent | Just enough to see the boundary without hiding map details |
+| `strokeOpacity: 0.3` | Subtle edge | Clearly marks the boundary without being visually heavy |
+| `strokeWeight: 2` | Thin line | Visible at all zoom levels without dominating |
+| `fillColor: '#4285F4'` | Google Blue | Matches the store marker color for visual consistency |
+| `clickable: false` | Non-interactive | Doesn't block click-to-place-pin functionality |
+
+### Tiered Pricing Circle Enhancement
+
+If distance tiers are active, we could show multiple concentric circles — one per tier — with different colors to visualize the pricing zones:
+
+```javascript
+if (config.pricing_mode === 'tiered' && config.distance_tiers) {
+    var colors = ['#059669', '#eab308', '#ef4444']; // green → yellow → red
+    config.distance_tiers.forEach(function(tier, i) {
+        new google.maps.Circle({
+            map: map,
+            center: storeLatLng,
+            radius: tier.to * 1000,
+            fillColor: colors[i % colors.length],
+            fillOpacity: 0.04,
+            strokeColor: colors[i % colors.length],
+            strokeOpacity: 0.25,
+            strokeWeight: 1,
+            clickable: false,
+        });
+    });
+}
+```
+
+This creates a beautiful, informative visualization where customers can see at a glance which pricing zone they're in.
+
+---
+
+## File Impact Summary
+
+| File | Action | Change Size |
+|---|---|---|
+| `class-alw-shipping-method.php` | ✏️ Add pricing_mode, distance_tiers, custom field type, tiered calculation | +150 lines |
+| `alw-checkout-map.js` | ✏️ Add tiered cost calculation, autocomplete, delivery circle | +100 lines |
+| `class-alw-admin.php` | ✏️ Add map container div, enqueue admin JS | +30 lines |
+| `class-alw-frontend.php` | ✏️ Pass tiers + pricing_mode via `wp_localize_script` | +10 lines |
+| `assets/js/alw-admin-map.js` | 🆕 Admin map picker | ~100 lines |
+| `assets/js/alw-admin-tiers.js` | 🆕 Repeater table JS for tier settings | ~80 lines |
+| `assets/css/alw-admin.css` | ✏️ Admin map + tier table styles | +40 lines |
+| `assets/css/alw-frontend.css` | ✏️ Autocomplete dropdown styling (optional) | +10 lines |
+
+---
+
+## Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| **Tiered pricing calculation mismatch** between frontend JS and backend PHP | Medium | High — customer sees wrong price | Use identical algorithm in both. Add server-side cost as the authoritative source (Phase 1 principle). Frontend is preview only. |
+| **Admin map fails to load** (API key not yet saved) | High on first setup | Medium — map just doesn't appear | Graceful fallback: show "Save your API key first, then refresh to see the map" message. |
+| **Places Autocomplete conflicts with existing reverse geocoding** | Medium | Medium — address fields overwrite each other | Set a `_placeSelected` flag in `place_changed`, check it in the `idle` reverse geocode handler, and skip reverse geocode for 2 seconds after a place selection. |
+| **Repeater table JS in WC modal** | Low | Medium — broken settings UI | Test with WC 8.0+ modal. Fall back to a JSON textarea if the modal has JS conflicts. |
+| **Multiple API cost increase** | Low | Low | Autocomplete uses session billing. Circle is zero-cost (rendered client-side). Admin map is one additional pageview per settings visit. |
+| **Breaking change for `rate_per_km`** | Low | Medium — existing configs still work | `pricing_mode` defaults to `flat_rate`, so existing installations are unaffected until admin opts in. |
+
+---
+
+## Verification Plan
+
+### Test 1: Tiered Pricing — Backend
+
+1. Go to WooCommerce → Settings → Shipping → Zone → Edit Distance Shipping method
+2. Change pricing mode to **Distance Tiers**
+3. Add tiers: 0–5km (Free), 5–15km (₹10/km), 15–30km (₹15/km + ₹50 flat)
+4. Place an order with delivery distance of 20km
+5. ✅ Verify order total includes: 0 + (10×10) + (5×15 + 50) = ₹225
+
+### Test 2: Tiered Pricing — Frontend Preview
+
+1. On checkout, move pin to ~20km from store
+2. ✅ Verify shipping panel shows the tiered cost matching backend calculation
+3. Move pin to ~3km (within free tier)
+4. ✅ Verify panel shows "Shipping: FREE"
+
+### Test 3: Admin Map Picker
+
+1. Go to Auto Location → Settings
+2. ✅ Verify: A Google Map appears above the lat/lng fields
+3. Click a different location on the map
+4. ✅ Verify: Lat/lng fields auto-update immediately
+5. Drag the pin to a new location
+6. ✅ Verify: Lat/lng fields update on drag end
+7. Manually change lat field value → press Tab
+8. ✅ Verify: Map pin moves to new coordinates
+
+### Test 4: Address Autocomplete
+
+1. On checkout page, start typing an address in billing_address_1
+2. ✅ Verify: Google Places dropdown appears with suggestions
+3. Select a suggestion
+4. ✅ Verify: City, state, postcode, country auto-fill
+5. ✅ Verify: Map pans to the selected address
+6. ✅ Verify: Shipping panel updates with distance and cost
+7. Press Enter while dropdown is visible
+8. ✅ Verify: Form does NOT submit (Enter key intercepted)
+
+### Test 5: Delivery Radius Circle
+
+1. On checkout page, zoom out on the map
+2. ✅ Verify: A subtle blue circle is visible around the store marker
+3. Move pin inside the circle → panel shows a valid shipping cost
+4. Move pin outside the circle → panel shows "DELIVERY NOT AVAILABLE"
+5. ✅ Verify: Circle boundary corresponds to MAX_KM setting
+
+### Test 6: Backward Compatibility
+
+1. Ensure pricing mode is set to **Flat Rate per KM** (default)
+2. Place an order
+3. ✅ Verify: Shipping cost is calculated using the original `rate_per_km` formula
+4. ✅ Verify: No errors or warnings in WP debug log

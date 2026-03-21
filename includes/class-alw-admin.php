@@ -11,16 +11,52 @@ class ALW_Admin_Settings {
     }
 
     public function enqueue_admin_assets( $hook ) {
-        // Only load on our specific settings page to avoid conflicts
-        if ( $hook !== 'toplevel_page_alw_settings' ) {
-            return;
+        $plugin_dir_url  = plugin_dir_url( dirname( __FILE__ ) );
+        $plugin_dir_path = plugin_dir_path( dirname( __FILE__ ) );
+
+        // ALW Settings page assets
+        if ( $hook === 'toplevel_page_alw_settings' ) {
+            wp_enqueue_style( 
+                'alw-admin-style', 
+                $plugin_dir_url . 'assets/css/alw-admin.css', 
+                array(), 
+                filemtime( $plugin_dir_path . 'assets/css/alw-admin.css' ) 
+            );
+
+            // Admin map picker (only if API key exists)
+            $api_key = get_option( 'alw_google_api_key', '' );
+            if ( ! empty( $api_key ) ) {
+                wp_enqueue_script(
+                    'alw-admin-map',
+                    $plugin_dir_url . 'assets/js/alw-admin-map.js',
+                    array( 'jquery' ),
+                    filemtime( $plugin_dir_path . 'assets/js/alw-admin-map.js' ),
+                    true
+                );
+                wp_localize_script( 'alw-admin-map', 'alw_admin_config', array(
+                    'api_key' => $api_key,
+                    'i18n'    => array(
+                        'store_location'        => __( 'Store Location', 'auto-location-woocommerce' ),
+                        'use_my_location'       => __( '📍 Use My Location', 'auto-location-woocommerce' ),
+                        'getting_location'      => __( 'Getting location…', 'auto-location-woocommerce' ),
+                        'geolocation_unsupported' => __( 'Geolocation not supported.', 'auto-location-woocommerce' ),
+                        'location_failed'       => __( 'Could not get location.', 'auto-location-woocommerce' ),
+                        'map_load_failed'       => __( 'Could not load Google Maps. Please check your API key.', 'auto-location-woocommerce' ),
+                    ),
+                ));
+            }
         }
-        wp_enqueue_style( 
-            'alw-admin-style', 
-            plugin_dir_url( dirname( __FILE__ ) ) . 'assets/css/alw-admin.css', 
-            array(), 
-            filemtime( plugin_dir_path( dirname( __FILE__ ) ) . 'assets/css/alw-admin.css' ) 
-        );
+
+        // Tiers repeater JS on WC Shipping settings pages
+        if ( $hook === 'woocommerce_page_wc-settings' || strpos( $hook, 'woocommerce' ) !== false ) {
+            wp_enqueue_script(
+                'alw-admin-tiers',
+                $plugin_dir_url . 'assets/js/alw-admin-tiers.js',
+                array( 'jquery' ),
+                filemtime( $plugin_dir_path . 'assets/js/alw-admin-tiers.js' ),
+                true
+            );
+        }
     }
 
     public function add_admin_menu() {
@@ -100,6 +136,28 @@ class ALW_Admin_Settings {
             </div>
             <p class="description" style="margin-top: 10px;"><?php esc_html_e( 'Ensure you enable billing on the Google Cloud Project, otherwise the API will not work.', 'auto-location-woocommerce' ); ?></p>
         </div>
+        <?php
+
+        // --- Admin Map Picker ---
+        $api_key = get_option( 'alw_google_api_key', '' );
+        if ( ! empty( $api_key ) ) :
+        ?>
+        <div id="alw-admin-map-section" style="margin: 15px 0 5px;">
+            <div id="alw-admin-map"></div>
+            <button type="button" class="button" id="alw-admin-use-location" style="margin-top:8px;">
+                <?php esc_html_e( '📍 Use My Location', 'auto-location-woocommerce' ); ?>
+            </button>
+            <p class="description"><?php esc_html_e( 'Click the map or drag the pin to set your store coordinates. Or click "Use My Location" to auto-detect.', 'auto-location-woocommerce' ); ?></p>
+        </div>
+        <?php
+        else :
+        ?>
+        <p class="description" style="margin: 10px 0; color: #666; font-style: italic;">
+            <?php esc_html_e( 'Save your API key first, then refresh this page to see the interactive map picker.', 'auto-location-woocommerce' ); ?>
+        </p>
+        <?php
+        endif;
+        ?>
         <?php
     }
 

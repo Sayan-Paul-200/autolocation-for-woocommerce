@@ -48,6 +48,8 @@ class ALW_Frontend_Scripts {
             'rate_per_km'     => ALW_RATE_PER_KM,
             'round_method'    => ALW_ROUND_METHOD,
             'currency_symbol' => html_entity_decode( get_woocommerce_currency_symbol() ),
+            'pricing_mode'    => $this->get_shipping_instance_option( 'pricing_mode', 'flat_rate' ),
+            'distance_tiers'  => $this->get_shipping_instance_option( 'distance_tiers', array() ),
             'i18n'            => array(
                 'shipping_free'           => __( 'Shipping: FREE', 'auto-location-woocommerce' ),
                 'shipping_label'          => __( 'Shipping', 'auto-location-woocommerce' ),
@@ -88,5 +90,46 @@ class ALW_Frontend_Scripts {
                 'delivery_not_available' => __( 'Delivery not available.', 'auto-location-woocommerce' ),
             ),
         ));
+    }
+
+    /**
+     * Get an option from the first ALW shipping method instance.
+     *
+     * Searches WooCommerce shipping zones for the first instance of
+     * 'alw_distance_shipping' and retrieves the requested option value.
+     *
+     * @param string $option_key Option key to retrieve.
+     * @param mixed  $default    Default value if not found.
+     * @return mixed
+     */
+    private function get_shipping_instance_option( $option_key, $default = '' ) {
+        static $instance_settings = null;
+
+        if ( $instance_settings === null ) {
+            $instance_settings = array();
+
+            if ( ! class_exists( 'WC_Shipping_Zones' ) ) {
+                return $default;
+            }
+
+            $zones = WC_Shipping_Zones::get_zones();
+            // Also include the "Rest of the World" zone (id=0)
+            $zones[0] = array( 'zone_id' => 0 );
+
+            foreach ( $zones as $zone_data ) {
+                $zone_id = isset( $zone_data['zone_id'] ) ? $zone_data['zone_id'] : 0;
+                $zone    = new WC_Shipping_Zone( $zone_id );
+                $methods = $zone->get_shipping_methods( true );
+
+                foreach ( $methods as $method ) {
+                    if ( $method->id === 'alw_distance_shipping' ) {
+                        $instance_settings = $method->instance_settings;
+                        break 2;
+                    }
+                }
+            }
+        }
+
+        return isset( $instance_settings[ $option_key ] ) ? $instance_settings[ $option_key ] : $default;
     }
 }

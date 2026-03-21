@@ -38,6 +38,7 @@ window.ALW = window.ALW || {};
   var userLocMarker = null;
   var userLocCircle = null;
   var connectionLine = null;
+  var _placeJustSelected = false;
 
   function injectMapsScript(url, id, onload, onerror){
     if (document.getElementById(id)) {
@@ -208,6 +209,23 @@ window.ALW = window.ALW || {};
   }
 
   function calculateShippingFromDistance(distance_km){
+    if (distance_km > MAX_KM) return { cost: null, raw_km: distance_km };
+
+    // Tiered pricing mode
+    if (config.pricing_mode === 'tiered' && config.distance_tiers && config.distance_tiers.length > 0) {
+      var total = 0, remaining = distance_km;
+      config.distance_tiers.forEach(function(tier) {
+        if (remaining <= 0 || distance_km <= tier.from) return;
+        var tkm = Math.min(remaining, tier.to - tier.from);
+        var tierCost = tkm * tier.rate;
+        if (tkm > 0) tierCost += tier.flat;
+        total += tierCost;
+        remaining -= tkm;
+      });
+      return { cost: Math.round(total * 100) / 100, raw_km: distance_km };
+    }
+
+    // Legacy flat rate
     var rounded_km = roundKm(distance_km);
     var cost = 0;
     if (distance_km <= FREE_KM) { cost = 0; } 
@@ -376,6 +394,9 @@ window.ALW = window.ALW || {};
           var key = lat.toFixed(6) + ',' + lng.toFixed(6);
           if (_last_geocode === key) return;
           _last_geocode = key;
+
+          // Skip reverse geocode if Places Autocomplete just filled the address
+          if (_placeJustSelected) return;
           
           var latField = document.querySelector('input[name="billing_lat"]');
           var lngField = document.querySelector('input[name="billing_lng"]');
@@ -472,7 +493,130 @@ window.ALW = window.ALW || {};
       // === End Control ===
 
       mapsLoaded = true;
+
+      // --- Delivery Radius Circle ---
+      if (config.pricing_mode === 'tiered' && config.distance_tiers && config.distance_tiers.length > 0) {
+        var tierColors = ['#059669', '#eab308', '#ef4444', '#8b5cf6', '#06b6d4'];
+        config.distance_tiers.forEach(function(tier, i) {
+          new google.maps.Circle({
+            map: map, center: storeLatLng,
+            radius: tier.to * 1000,
+            fillColor: tierColors[i % tierColors.length],
+            fillOpacity: 0.04,
+            strokeColor: tierColors[i % tierColors.length],
+            strokeOpacity: 0.25,
+            strokeWeight: 1,
+            clickable: false,
+            zIndex: 1,
+          });
+        });
+      } else {
+        new google.maps.Circle({
+          map: map, center: storeLatLng,
+          radius: MAX_KM * 1000,
+          fillColor: '#4285F4',
+          fillOpacity: 0.06,
+          strokeColor: '#4285F4',
+          strokeOpacity: 0.3,
+          strokeWeight: 2,
+          clickable: false,
+          zIndex: 1,
+        });
+      }
+
+      // --- Places Autocomplete ---
+      initPlacesAutocomplete();
+
     } catch (e) { console.error('ALW initMap exception', e); }
+  }
+
+  // --- Places Autocomplete ---
+  function initPlacesAutocomplete() {
+    var addressInput = document.querySelector('input[name="billing_address_1"]');
+    if (!addressInput || typeof google === 'undefined' || !google.maps || !google.maps.places) return;
+
+    var autocomplete = new google.maps.places.Autocomplete(addressInput, {
+      types: ['address'],
+      fields: ['address_components', 'geometry', 'formatted_address', 'name'],
+    });
+
+    autocomplete.addListener('place_changed', function() {
+      var place = autocomplete.getPlace();
+      if (!place || !place.geometry) return;
+
+      var lat = place.geometry.location.lat();
+      var lng = place.geometry.location.lng();
+
+      // Set skip flag to prevent reverse-geocode overwriting the autocomplete result
+      _placeJustSelected = true;
+      setTimeout(function() { _placeJustSelected = false; }, 2000);
+
+      // Set hidden fields
+      setHiddenLatLng(lat, lng);
+
+      // Auto-fill address components
+      fillAddressFromPlace(place);
+
+      // Pan map
+      if (map) {
+        map.panTo(place.geometry.location);
+        map.setZoom(17);
+      }
+
+      // Recompute shipping
+      recomputeAndShow();
+    });
+
+    // Prevent form submission on Enter when autocomplete dropdown is visible
+    addressInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        var pac = document.querySelector('.pac-container');
+        if (pac && pac.style.display !== 'none' && pac.childNodes.length > 0) {
+          e.preventDefault();
+        }
+      }
+    });
+  }
+
+  function fillAddressFromPlace(place) {
+    var components = place.address_components || [];
+    function getComp(type) {
+      for (var i = 0; i < components.length; i++) {
+        if (components[i].types.indexOf(type) !== -1) return components[i];
+      }
+      return null;
+    }
+
+    var streetNumber = getComp('street_number');
+    var route = getComp('route');
+    var locality = getComp('locality') || getComp('postal_town');
+    var admin = getComp('administrative_area_level_1');
+    var postal = getComp('postal_code');
+    var country = getComp('country');
+    var sublocality = getComp('sublocality') || getComp('sublocality_level_1');
+
+    var addr1 = '';
+    if (streetNumber && route) addr1 = streetNumber.long_name + ' ' + route.long_name;
+    else if (route && sublocality) addr1 = route.long_name + ', ' + sublocality.long_name;
+    else if (route) addr1 = route.long_name;
+    else addr1 = place.formatted_address || '';
+
+    var billingCity = document.querySelector('input[name="billing_city"]');
+    var billingPostcode = document.querySelector('input[name="billing_postcode"]');
+    if (billingCity && locality) billingCity.value = locality.long_name || locality.short_name;
+    if (billingPostcode && postal) billingPostcode.value = postal.long_name;
+
+    // State and country use <select> — trigger change events for WC to react
+    var stateEl = document.querySelector('select[name="billing_state"], input[name="billing_state"]');
+    var countryEl = document.querySelector('select[name="billing_country"], input[name="billing_country"]');
+    if (stateEl && admin) {
+      stateEl.value = admin.short_name || admin.long_name;
+      try { stateEl.dispatchEvent(new Event('change', { bubbles: true })); } catch(e) {}
+    }
+    if (countryEl && country) {
+      countryEl.value = country.short_name || country.long_name;
+      try { countryEl.dispatchEvent(new Event('change', { bubbles: true })); } catch(e) {}
+    }
   }
 
   function ensureMapInjection(){
