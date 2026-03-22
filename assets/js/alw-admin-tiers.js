@@ -106,19 +106,19 @@
             var $ratePerKm = $('input[name*="rate_per_km"]');
             if (!$ratePerKm.length) $ratePerKm = $('[id*="rate_per_km"]');
 
-            // Find closest wrapper (tr, or form-row)
-            var $freeKmRow     = $freeKm.closest('tr, .form-row, .form-field').length ? $freeKm.closest('tr, .form-row, .form-field') : $freeKm.parent();
-            var $ratePerKmRow  = $ratePerKm.closest('tr, .form-row, .form-field').length ? $ratePerKm.closest('tr, .form-row, .form-field') : $ratePerKm.parent();
-            var $tiersRow      = $('#alw-tiers-wrap').closest('tr, .form-row, .form-field').length ? $('#alw-tiers-wrap').closest('tr, .form-row, .form-field') : $('#alw-tiers-wrap').parent();
+            // Find closest wrapper strictly to prevent catastrophic layout hiding
+            var $freeKmRow     = $freeKm.closest('tr, .form-row, .form-field, fieldset');
+            var $ratePerKmRow  = $ratePerKm.closest('tr, .form-row, .form-field, fieldset');
+            var $tiersRow      = $('#alw-tiers-wrap').closest('tr, .form-row, .form-field, fieldset');
 
             if ( isTiered ) {
-                $freeKmRow.hide();
-                $ratePerKmRow.hide();
-                $tiersRow.show();
+                if ($freeKmRow.length) $freeKmRow.hide();
+                if ($ratePerKmRow.length) $ratePerKmRow.hide();
+                if ($tiersRow.length) $tiersRow.show();
             } else {
-                $freeKmRow.show();
-                $ratePerKmRow.show();
-                $tiersRow.hide();
+                if ($freeKmRow.length) $freeKmRow.show();
+                if ($ratePerKmRow.length) $ratePerKmRow.show();
+                if ($tiersRow.length) $tiersRow.hide();
             }
         }
 
