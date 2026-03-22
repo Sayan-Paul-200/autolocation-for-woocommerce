@@ -88,42 +88,51 @@
         // ---------------------------------------------------------
         // Dynamic Field Visibility
         // ---------------------------------------------------------
-        var $form = $body.closest('form');
-        
+        // ---------------------------------------------------------
+        // Dynamic Field Visibility
+        // ---------------------------------------------------------
         function togglePricingFields() {
-            if ( ! $form.length ) return;
-
-            var $pricingMode = $form.find('select[id$="pricing_mode"]');
+            var $pricingMode = $('select[name*="pricing_mode"]');
+            if ( ! $pricingMode.length ) $pricingMode = $('[id*="pricing_mode"]');
+            
             if ( ! $pricingMode.length ) return;
 
-            var mode = $pricingMode.val();
+            var mode = $pricingMode.val() || '';
+            var isTiered = mode === 'tiered' || (typeof mode === 'object' && mode.indexOf('tiered') !== -1);
             
-            var $freeKmTr    = $form.find('input[id$="free_km"]').closest('tr');
-            var $ratePerKmTr = $form.find('input[id$="rate_per_km"]').closest('tr');
-            var $tiersTr     = $body.closest('tr');
+            var $freeKm    = $('input[name*="free_km"]');
+            if (!$freeKm.length) $freeKm = $('[id*="free_km"]');
+            
+            var $ratePerKm = $('input[name*="rate_per_km"]');
+            if (!$ratePerKm.length) $ratePerKm = $('[id*="rate_per_km"]');
 
-            if ( mode === 'tiered' ) {
-                $freeKmTr.hide();
-                $ratePerKmTr.hide();
-                $tiersTr.show();
+            // Find closest wrapper (tr, or form-row)
+            var $freeKmRow     = $freeKm.closest('tr, .form-row, .form-field').length ? $freeKm.closest('tr, .form-row, .form-field') : $freeKm.parent();
+            var $ratePerKmRow  = $ratePerKm.closest('tr, .form-row, .form-field').length ? $ratePerKm.closest('tr, .form-row, .form-field') : $ratePerKm.parent();
+            var $tiersRow      = $('#alw-tiers-wrap').closest('tr, .form-row, .form-field').length ? $('#alw-tiers-wrap').closest('tr, .form-row, .form-field') : $('#alw-tiers-wrap').parent();
+
+            if ( isTiered ) {
+                $freeKmRow.hide();
+                $ratePerKmRow.hide();
+                $tiersRow.show();
             } else {
-                $freeKmTr.show();
-                $ratePerKmTr.show();
-                $tiersTr.hide();
+                $freeKmRow.show();
+                $ratePerKmRow.show();
+                $tiersRow.hide();
             }
         }
 
-        // Run once on load
-        togglePricingFields();
+        // Run once on load, use setTimeout to escape any Backbone render race conditions
+        setTimeout(togglePricingFields, 50);
 
-        // Run on pricing mode change
-        if ( $form.length ) {
-            $form.on('change', 'select[id$="pricing_mode"]', togglePricingFields);
-        }
+        // Run on pricing mode change (bind to body to catch all dynamic elements securely)
+        $(document.body).off('change.alw_toggle').on('change.alw_toggle', 'select[name*="pricing_mode"], [id*="pricing_mode"]', togglePricingFields);
     }
 
     // Init on DOM ready and when WC opens the modal
     $(document).ready(initTiersRepeater);
-    $(document.body).on('wc_backbone_modal_loaded', initTiersRepeater);
+    $(document.body).on('wc_backbone_modal_loaded', function() {
+        setTimeout(initTiersRepeater, 50);
+    });
 
 })(jQuery);
