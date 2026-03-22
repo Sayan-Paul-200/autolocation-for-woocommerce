@@ -88,17 +88,19 @@
         // ---------------------------------------------------------
         // Dynamic Field Visibility
         // ---------------------------------------------------------
+        var $form = $body.closest('form');
+        
         function togglePricingFields() {
-            var $pricingMode = $('select[id$="pricing_mode"]');
+            if ( ! $form.length ) return;
+
+            var $pricingMode = $form.find('select[id$="pricing_mode"]');
             if ( ! $pricingMode.length ) return;
 
             var mode = $pricingMode.val();
             
-            // Find parent table rows for the fields using attribute-ends-with matching
-            // because WC dynamically attaches Instance IDs (e.g. `_1_`, `_2_`)
-            var $freeKmTr    = $('input[id$="free_km"]').closest('tr');
-            var $ratePerKmTr = $('input[id$="rate_per_km"]').closest('tr');
-            var $tiersTr     = $('#alw-tiers-wrap').closest('tr');
+            var $freeKmTr    = $form.find('input[id$="free_km"]').closest('tr');
+            var $ratePerKmTr = $form.find('input[id$="rate_per_km"]').closest('tr');
+            var $tiersTr     = $body.closest('tr');
 
             if ( mode === 'tiered' ) {
                 $freeKmTr.hide();
@@ -115,7 +117,9 @@
         togglePricingFields();
 
         // Run on pricing mode change
-        $(document.body).on('change', 'select[id$="pricing_mode"]', togglePricingFields);
+        if ( $form.length ) {
+            $form.on('change', 'select[id$="pricing_mode"]', togglePricingFields);
+        }
     }
 
     // Init on DOM ready and when WC opens the modal
