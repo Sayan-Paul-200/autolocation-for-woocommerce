@@ -182,6 +182,4 @@ class ALW_Admin_Settings {
         }
         return $value;
     }
-
-    }
 }
