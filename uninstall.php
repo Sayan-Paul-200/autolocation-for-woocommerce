@@ -16,10 +16,6 @@ $alw_options = array(
     'alw_google_api_key',
     'alw_store_lat',
     'alw_store_lng',
-    'alw_free_km',
-    'alw_max_km',
-    'alw_rate_per_km',
-    'alw_round_method',
 );
 
 if ( is_multisite() ) {

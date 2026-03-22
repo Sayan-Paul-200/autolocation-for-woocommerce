@@ -43,20 +43,20 @@ class ALW_Frontend_Scripts {
             'api_key'         => ALW_GOOGLE_API_KEY,
             'store_lat'       => ALW_STORE_LAT,
             'store_lng'       => ALW_STORE_LNG,
-            'free_km'         => ALW_FREE_KM,
-            'max_km'          => ALW_MAX_KM,
-            'rate_per_km'     => ALW_RATE_PER_KM,
-            'round_method'    => ALW_ROUND_METHOD,
+            'free_km'         => ALW_Shipping_Method::get_first_instance_option( 'free_km', 0 ),
+            'max_km'          => ALW_Shipping_Method::get_first_instance_option( 'max_km', 20 ),
+            'rate_per_km'     => ALW_Shipping_Method::get_first_instance_option( 'rate_per_km', 15 ),
+            'round_method'    => ALW_Shipping_Method::get_first_instance_option( 'round_method', 'ceil' ),
             'currency_symbol' => html_entity_decode( get_woocommerce_currency_symbol() ),
-            'pricing_mode'    => $this->get_shipping_instance_option( 'pricing_mode', 'flat_rate' ),
-            'distance_tiers'  => $this->get_shipping_instance_option( 'distance_tiers', array() ),
+            'pricing_mode'    => ALW_Shipping_Method::get_first_instance_option( 'pricing_mode', 'flat_rate' ),
+            'distance_tiers'  => ALW_Shipping_Method::get_first_instance_option( 'distance_tiers', array() ),
             'i18n'            => array(
                 'shipping_free'           => __( 'Shipping: FREE', 'auto-location-woocommerce' ),
                 'shipping_label'          => __( 'Shipping', 'auto-location-woocommerce' ),
                 'delivery_not_available'  => sprintf(
                     /* translators: %s: maximum delivery distance in km */
                     __( 'DELIVERY NOT AVAILABLE (beyond %s km)', 'auto-location-woocommerce' ),
-                    ALW_MAX_KM
+                    ALW_Shipping_Method::get_first_instance_option( 'max_km', 20 )
                 ),
                 'enter_address'           => __( 'Enter billing address or pick location on the map to calculate shipping.', 'auto-location-woocommerce' ),
                 'place_pin'               => __( 'Place the pin at exact delivery location', 'auto-location-woocommerce' ),
@@ -92,44 +92,5 @@ class ALW_Frontend_Scripts {
         ));
     }
 
-    /**
-     * Get an option from the first ALW shipping method instance.
-     *
-     * Searches WooCommerce shipping zones for the first instance of
-     * 'alw_distance_shipping' and retrieves the requested option value.
-     *
-     * @param string $option_key Option key to retrieve.
-     * @param mixed  $default    Default value if not found.
-     * @return mixed
-     */
-    private function get_shipping_instance_option( $option_key, $default = '' ) {
-        static $instance_settings = null;
 
-        if ( $instance_settings === null ) {
-            $instance_settings = array();
-
-            if ( ! class_exists( 'WC_Shipping_Zones' ) ) {
-                return $default;
-            }
-
-            $zones = WC_Shipping_Zones::get_zones();
-            // Also include the "Rest of the World" zone (id=0)
-            $zones[0] = array( 'zone_id' => 0 );
-
-            foreach ( $zones as $zone_data ) {
-                $zone_id = isset( $zone_data['zone_id'] ) ? $zone_data['zone_id'] : 0;
-                $zone    = new WC_Shipping_Zone( $zone_id );
-                $methods = $zone->get_shipping_methods( true );
-
-                foreach ( $methods as $method ) {
-                    if ( $method->id === 'alw_distance_shipping' ) {
-                        $instance_settings = $method->instance_settings;
-                        break 2;
-                    }
-                }
-            }
-        }
-
-        return isset( $instance_settings[ $option_key ] ) ? $instance_settings[ $option_key ] : $default;
-    }
 }

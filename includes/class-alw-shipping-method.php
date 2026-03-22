@@ -61,7 +61,7 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
             'free_km' => array(
                 'title'       => __( 'Free Shipping Distance (km)', 'auto-location-woocommerce' ),
                 'type'        => 'number',
-                'default'     => get_option( 'alw_free_km', 0 ),
+                'default'     => 0,
                 'desc_tip'    => true,
                 'description' => __( 'Orders within this distance get free shipping.', 'auto-location-woocommerce' ),
                 'custom_attributes' => array( 'step' => '0.01', 'min' => '0' ),
@@ -69,7 +69,7 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
             'max_km' => array(
                 'title'       => __( 'Max Delivery Distance (km)', 'auto-location-woocommerce' ),
                 'type'        => 'number',
-                'default'     => get_option( 'alw_max_km', 50 ),
+                'default'     => 20,
                 'desc_tip'    => true,
                 'description' => __( 'Orders beyond this distance will not see this shipping option.', 'auto-location-woocommerce' ),
                 'custom_attributes' => array( 'step' => '0.01', 'min' => '0' ),
@@ -77,7 +77,7 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
             'rate_per_km' => array(
                 'title'       => __( 'Rate Per KM', 'auto-location-woocommerce' ),
                 'type'        => 'number',
-                'default'     => get_option( 'alw_rate_per_km', 10 ),
+                'default'     => 15,
                 'desc_tip'    => true,
                 'description' => __( 'Cost per kilometer beyond the free shipping distance.', 'auto-location-woocommerce' ),
                 'custom_attributes' => array( 'step' => '0.01', 'min' => '0' ),
@@ -85,7 +85,7 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
             'round_method' => array(
                 'title'   => __( 'Rounding Method', 'auto-location-woocommerce' ),
                 'type'    => 'select',
-                'default' => get_option( 'alw_round_method', 'ceil' ),
+                'default' => 'ceil',
                 'options' => array(
                     'ceil'  => __( 'Ceil (Round Up)', 'auto-location-woocommerce' ),
                     'floor' => __( 'Floor (Round Down)', 'auto-location-woocommerce' ),
@@ -339,5 +339,41 @@ class ALW_Shipping_Method extends WC_Shipping_Method {
         }
 
         return round( $total, 2 );
+    }
+
+    /**
+     * Helper: Safely grab an option value from the first found instance of this shipping method.
+     * Useful for the frontend mapping script before the shipping zone is finalized.
+     *
+     * @param string $option_key Option key to retrieve.
+     * @param mixed  $default    Default value if not found.
+     * @return mixed
+     */
+    public static function get_first_instance_option( $option_key, $default = '' ) {
+        static $instance_settings = null;
+
+        if ( $instance_settings === null ) {
+            $instance_settings = array();
+
+            if ( class_exists( 'WC_Shipping_Zones' ) ) {
+                $zones = WC_Shipping_Zones::get_zones();
+                $zones[0] = array( 'zone_id' => 0 ); // "Rest of the World" zone
+
+                foreach ( $zones as $zone_data ) {
+                    $zone_id = isset( $zone_data['zone_id'] ) ? $zone_data['zone_id'] : 0;
+                    $zone    = new WC_Shipping_Zone( $zone_id );
+                    $methods = $zone->get_shipping_methods( true );
+
+                    foreach ( $methods as $method ) {
+                        if ( $method->id === 'alw_distance_shipping' ) {
+                            $instance_settings = $method->instance_settings;
+                            break 2;
+                        }
+                    }
+                }
+            }
+        }
+
+        return isset( $instance_settings[ $option_key ] ) ? $instance_settings[ $option_key ] : $default;
     }
 }

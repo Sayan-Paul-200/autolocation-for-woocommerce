@@ -50,19 +50,12 @@ add_action( 'plugins_loaded', function() {
     $alw_api_key      = get_option( 'alw_google_api_key' );
     $alw_lat          = get_option( 'alw_store_lat' );
     $alw_lng          = get_option( 'alw_store_lng' );
-    $alw_free_km      = get_option( 'alw_free_km' );
-    $alw_max_km       = get_option( 'alw_max_km' );
-    $alw_rate_per_km  = get_option( 'alw_rate_per_km' );
-    $alw_round_method = get_option( 'alw_round_method', 'ceil' );
 
     // --- Check Configuration Completeness ---
     $alw_is_configured = (
         ! empty( $alw_api_key ) &&
         ! empty( $alw_lat ) &&
-        ! empty( $alw_lng ) &&
-        $alw_free_km !== '' && $alw_free_km !== false &&
-        $alw_max_km !== '' && $alw_max_km !== false &&
-        $alw_rate_per_km !== '' && $alw_rate_per_km !== false
+        ! empty( $alw_lng )
     );
 
     if ( ! $alw_is_configured ) {
@@ -89,10 +82,6 @@ add_action( 'plugins_loaded', function() {
     define( 'ALW_GOOGLE_API_KEY', $alw_api_key );
     define( 'ALW_STORE_LAT',      $alw_lat );
     define( 'ALW_STORE_LNG',      $alw_lng );
-    define( 'ALW_FREE_KM',        floatval( $alw_free_km ) );
-    define( 'ALW_MAX_KM',         floatval( $alw_max_km ) );
-    define( 'ALW_RATE_PER_KM',    floatval( $alw_rate_per_km ) );
-    define( 'ALW_ROUND_METHOD',   $alw_round_method );
     define( 'ALW_CACHE_SECONDS',  DAY_IN_SECONDS * 7 );
 
     // --- Include Logic Files ---
@@ -137,12 +126,13 @@ add_action( 'plugins_loaded', function() {
         $service     = new ALW_Distance_Service();
         $distance_km = $service->compute_distance( ALW_STORE_LAT, ALW_STORE_LNG, $cust_lat, $cust_lng );
 
-        if ( $distance_km > ALW_MAX_KM ) {
+        $max_delivery_km = floatval( ALW_Shipping_Method::get_first_instance_option( 'max_km', 20 ) );
+        if ( $distance_km > $max_delivery_km ) {
             wc_add_notice(
                 sprintf(
                     /* translators: 1: actual distance in km, 2: maximum delivery distance in km */
                     __( 'We do not deliver to this address — it is %.2f km away which exceeds our delivery radius of %s km.', 'auto-location-woocommerce' ),
-                    $distance_km, ALW_MAX_KM
+                    $distance_km, $max_delivery_km
                 ),
                 'error'
             );
