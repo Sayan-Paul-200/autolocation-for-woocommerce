@@ -17,7 +17,7 @@
     var latField = document.querySelector('input[name="alw_store_lat"]');
     var lngField = document.querySelector('input[name="alw_store_lng"]');
     var mapEl    = document.getElementById('alw-admin-map');
-    var apiKeyField = document.getElementById('alw_google_api_key');
+    var apiKeyField = document.querySelector('input[name="alw_google_api_key"]');
 
     if (!latField || !lngField || !mapEl) return;
 

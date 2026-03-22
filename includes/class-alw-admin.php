@@ -160,7 +160,7 @@ class ALW_Admin_Settings {
 
     public function render_text_field( $args ) {
         $option = get_option( $args['id'] );
-        echo '<input type="text" name="' . esc_attr( $args['id'] ) . '" value="' . esc_attr( $option ) . '" class="regular-text" />';
+        echo '<input type="text" id="' . esc_attr( $args['id'] ) . '" name="' . esc_attr( $args['id'] ) . '" value="' . esc_attr( $option ) . '" class="regular-text" />';
         if ( ! empty( $args['desc'] ) ) echo '<p class="description">' . esc_html( $args['desc'] ) . '</p>';
     }
 
