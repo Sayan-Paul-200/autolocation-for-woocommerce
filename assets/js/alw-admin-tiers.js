@@ -84,6 +84,37 @@
         });
 
         renderRows();
+
+        // ---------------------------------------------------------
+        // Dynamic Field Visibility
+        // ---------------------------------------------------------
+        function togglePricingFields() {
+            var $pricingMode = $('#woocommerce_alw_distance_shipping_pricing_mode');
+            if ( ! $pricingMode.length ) return;
+
+            var mode = $pricingMode.val();
+            
+            // Find parent table rows for the fields
+            var $freeKmTr    = $('#woocommerce_alw_distance_shipping_free_km').closest('tr');
+            var $ratePerKmTr = $('#woocommerce_alw_distance_shipping_rate_per_km').closest('tr');
+            var $tiersTr     = $('#alw-tiers-wrap').closest('tr');
+
+            if ( mode === 'tiered' ) {
+                $freeKmTr.hide();
+                $ratePerKmTr.hide();
+                $tiersTr.show();
+            } else {
+                $freeKmTr.show();
+                $ratePerKmTr.show();
+                $tiersTr.hide();
+            }
+        }
+
+        // Run once on load
+        togglePricingFields();
+
+        // Run on pricing mode change
+        $(document.body).on('change', '#woocommerce_alw_distance_shipping_pricing_mode', togglePricingFields);
     }
 
     // Init on DOM ready and when WC opens the modal
