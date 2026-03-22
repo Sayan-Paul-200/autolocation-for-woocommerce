@@ -11,12 +11,13 @@
 (function($, config) {
     'use strict';
 
-    if (!config || !config.api_key) return;
+    if (!config) return;
 
     var map, marker;
     var latField = document.querySelector('input[name="alw_store_lat"]');
     var lngField = document.querySelector('input[name="alw_store_lng"]');
     var mapEl    = document.getElementById('alw-admin-map');
+    var apiKeyField = document.getElementById('alw_google_api_key');
 
     if (!latField || !lngField || !mapEl) return;
 
@@ -100,18 +101,43 @@
         }
     }
 
-    // Inject Google Maps script and init
-    if (typeof google !== 'undefined' && google.maps) {
-        initAdminMap();
-    } else {
-        var s = document.createElement('script');
-        s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(config.api_key);
-        s.onload = initAdminMap;
-        s.onerror = function() {
-            mapEl.innerHTML = '<p style="padding:20px;color:#666;text-align:center;">' +
-                (config.i18n.map_load_failed || 'Could not load Google Maps. Please check your API key.') + '</p>';
-        };
-        document.head.appendChild(s);
+    var scriptInjected = false;
+
+    function loadGoogleMaps(apiKey) {
+        if (scriptInjected) return;
+        scriptInjected = true;
+
+        // Ensure button and description are visible
+        var useLocBtn = document.getElementById('alw-admin-use-location');
+        if (useLocBtn) useLocBtn.style.display = 'inline-block';
+        var descTarget = document.getElementById('alw-admin-map-desc');
+        if (descTarget) descTarget.style.display = 'block';
+
+        if (typeof google !== 'undefined' && google.maps) {
+            initAdminMap();
+        } else {
+            var s = document.createElement('script');
+            s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey);
+            s.onload = initAdminMap;
+            s.onerror = function() {
+                mapEl.innerHTML = '<p style="padding:20px;color:#666;text-align:center;">' +
+                    (config.i18n.map_load_failed || 'Could not load Google Maps. Please check your API key.') + '</p>';
+                scriptInjected = false; // allow retry
+            };
+            document.head.appendChild(s);
+        }
+    }
+
+    if (config.api_key) {
+        loadGoogleMaps(config.api_key);
+    } else if (apiKeyField) {
+        // Listen for user to paste API key
+        apiKeyField.addEventListener('input', function() {
+            var val = this.value.trim();
+            if (val.length > 25 && !scriptInjected) {
+                loadGoogleMaps(val);
+            }
+        });
     }
 
 })(jQuery, window.alw_admin_config || {});

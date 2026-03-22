@@ -23,28 +23,27 @@ class ALW_Admin_Settings {
                 filemtime( $plugin_dir_path . 'assets/css/alw-admin.css' ) 
             );
 
-            // Admin map picker (only if API key exists)
+            // Admin map picker (always load)
             $api_key = get_option( 'alw_google_api_key', '' );
-            if ( ! empty( $api_key ) ) {
-                wp_enqueue_script(
-                    'alw-admin-map',
-                    $plugin_dir_url . 'assets/js/alw-admin-map.js',
-                    array( 'jquery' ),
-                    filemtime( $plugin_dir_path . 'assets/js/alw-admin-map.js' ),
-                    true
-                );
-                wp_localize_script( 'alw-admin-map', 'alw_admin_config', array(
-                    'api_key' => $api_key,
-                    'i18n'    => array(
-                        'store_location'        => __( 'Store Location', 'auto-location-woocommerce' ),
-                        'use_my_location'       => __( '📍 Use My Location', 'auto-location-woocommerce' ),
-                        'getting_location'      => __( 'Getting location…', 'auto-location-woocommerce' ),
-                        'geolocation_unsupported' => __( 'Geolocation not supported.', 'auto-location-woocommerce' ),
-                        'location_failed'       => __( 'Could not get location.', 'auto-location-woocommerce' ),
-                        'map_load_failed'       => __( 'Could not load Google Maps. Please check your API key.', 'auto-location-woocommerce' ),
-                    ),
-                ));
-            }
+            
+            wp_enqueue_script(
+                'alw-admin-map',
+                $plugin_dir_url . 'assets/js/alw-admin-map.js',
+                array( 'jquery' ),
+                filemtime( $plugin_dir_path . 'assets/js/alw-admin-map.js' ),
+                true
+            );
+            wp_localize_script( 'alw-admin-map', 'alw_admin_config', array(
+                'api_key' => $api_key,
+                'i18n'    => array(
+                    'store_location'        => __( 'Store Location', 'auto-location-woocommerce' ),
+                    'use_my_location'       => __( '📍 Use My Location', 'auto-location-woocommerce' ),
+                    'getting_location'      => __( 'Getting location…', 'auto-location-woocommerce' ),
+                    'geolocation_unsupported' => __( 'Geolocation not supported.', 'auto-location-woocommerce' ),
+                    'location_failed'       => __( 'Could not get location.', 'auto-location-woocommerce' ),
+                    'map_load_failed'       => __( 'Could not load Google Maps. Please check your API key.', 'auto-location-woocommerce' ),
+                ),
+            ));
         }
 
         // Tiers repeater JS on WC Shipping settings pages
@@ -140,24 +139,22 @@ class ALW_Admin_Settings {
 
         // --- Admin Map Picker ---
         $api_key = get_option( 'alw_google_api_key', '' );
-        if ( ! empty( $api_key ) ) :
         ?>
         <div id="alw-admin-map-section" style="margin: 15px 0 5px;">
-            <div id="alw-admin-map"></div>
-            <button type="button" class="button" id="alw-admin-use-location" style="margin-top:8px;">
+            <div id="alw-admin-map" style="position:relative;">
+                <?php if ( empty( $api_key ) ) : ?>
+                    <div id="alw-admin-map-placeholder" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:#fff;border:1px dashed #ccc;border-radius:8px;text-align:center;padding:20px;color:#666;">
+                        <?php esc_html_e( 'Please enter your Google Maps API Key above to load the interactive map.', 'auto-location-woocommerce' ); ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+            <button type="button" class="button" id="alw-admin-use-location" style="margin-top:8px; <?php echo empty( $api_key ) ? 'display:none;' : ''; ?>">
                 <?php esc_html_e( '📍 Use My Location', 'auto-location-woocommerce' ); ?>
             </button>
-            <p class="description"><?php esc_html_e( 'Click the map or drag the pin to set your store coordinates. Or click "Use My Location" to auto-detect.', 'auto-location-woocommerce' ); ?></p>
+            <p class="description" id="alw-admin-map-desc" <?php echo empty( $api_key ) ? 'style="display:none;"' : ''; ?>>
+                <?php esc_html_e( 'Click the map or drag the pin to set your store coordinates. Or click "Use My Location" to auto-detect.', 'auto-location-woocommerce' ); ?>
+            </p>
         </div>
-        <?php
-        else :
-        ?>
-        <p class="description" style="margin: 10px 0; color: #666; font-style: italic;">
-            <?php esc_html_e( 'Save your API key first, then refresh this page to see the interactive map picker.', 'auto-location-woocommerce' ); ?>
-        </p>
-        <?php
-        endif;
-        ?>
         <?php
     }
 
