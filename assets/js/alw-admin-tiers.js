@@ -89,14 +89,15 @@
         // Dynamic Field Visibility
         // ---------------------------------------------------------
         function togglePricingFields() {
-            var $pricingMode = $('#woocommerce_alw_distance_shipping_pricing_mode');
+            var $pricingMode = $('select[id$="pricing_mode"]');
             if ( ! $pricingMode.length ) return;
 
             var mode = $pricingMode.val();
             
-            // Find parent table rows for the fields
-            var $freeKmTr    = $('#woocommerce_alw_distance_shipping_free_km').closest('tr');
-            var $ratePerKmTr = $('#woocommerce_alw_distance_shipping_rate_per_km').closest('tr');
+            // Find parent table rows for the fields using attribute-ends-with matching
+            // because WC dynamically attaches Instance IDs (e.g. `_1_`, `_2_`)
+            var $freeKmTr    = $('input[id$="free_km"]').closest('tr');
+            var $ratePerKmTr = $('input[id$="rate_per_km"]').closest('tr');
             var $tiersTr     = $('#alw-tiers-wrap').closest('tr');
 
             if ( mode === 'tiered' ) {
@@ -114,7 +115,7 @@
         togglePricingFields();
 
         // Run on pricing mode change
-        $(document.body).on('change', '#woocommerce_alw_distance_shipping_pricing_mode', togglePricingFields);
+        $(document.body).on('change', 'select[id$="pricing_mode"]', togglePricingFields);
     }
 
     // Init on DOM ready and when WC opens the modal
