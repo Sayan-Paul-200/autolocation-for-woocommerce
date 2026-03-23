@@ -23,6 +23,11 @@ $alw_max_km       = get_option( 'alw_max_km' );
 $alw_rate_per_km  = get_option( 'alw_rate_per_km' );
 $alw_round_method = get_option( 'alw_round_method', 'ceil' ); // Rounding can have a default as it's a dropdown
 
+$alw_wa_enabled   = get_option( 'alw_wa_enabled' );
+$alw_wa_phone_id  = get_option( 'alw_wa_phone_id' );
+$alw_wa_token     = get_option( 'alw_wa_token' );
+$alw_admin_phone  = get_option( 'alw_admin_phone' );
+
 // =================================================================
 // 2. CHECK CONFIGURATION COMPLETENESS
 // =================================================================
@@ -74,16 +79,27 @@ if ( $alw_is_configured ) {
     define( 'ALW_RATE_PER_KM',    floatval( $alw_rate_per_km ) );
     define( 'ALW_ROUND_METHOD',   $alw_round_method );
     define( 'ALW_CACHE_SECONDS',  DAY_IN_SECONDS * 7 );
+    
+    // WhatsApp configuration
+    define( 'ALW_WA_ENABLED',     $alw_wa_enabled == 1 );
+    define( 'ALW_WA_PHONE_ID',    $alw_wa_phone_id );
+    define( 'ALW_WA_TOKEN',       $alw_wa_token );
+    define( 'ALW_ADMIN_PHONE',    $alw_admin_phone );
 
     // Include logic files
     require_once plugin_dir_path( __FILE__ ) . 'includes/class-alw-checkout.php';
     require_once plugin_dir_path( __FILE__ ) . 'includes/class-alw-frontend.php';
     require_once plugin_dir_path( __FILE__ ) . 'includes/class-alw-shipping.php';
+    require_once plugin_dir_path( __FILE__ ) . 'includes/class-alw-server.php';
 
     // Instantiate Logic Classes
     add_action( 'plugins_loaded', function() {
         new ALW_Checkout_Manager();
         new ALW_Frontend_Scripts();
         new ALW_Shipping_Calculator();
+        
+        if ( defined( 'ALW_WA_ENABLED' ) && ALW_WA_ENABLED ) {
+            new ALW_WhatsApp_Notifier();
+        }
     });
 }

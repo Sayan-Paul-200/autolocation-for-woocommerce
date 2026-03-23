@@ -38,9 +38,14 @@ class ALW_Admin_Settings {
         register_setting( 'alw_settings_group', 'alw_max_km' );
         register_setting( 'alw_settings_group', 'alw_rate_per_km' );
         register_setting( 'alw_settings_group', 'alw_round_method' );
+        register_setting( 'alw_settings_group', 'alw_wa_enabled' );
+        register_setting( 'alw_settings_group', 'alw_wa_phone_id' );
+        register_setting( 'alw_settings_group', 'alw_wa_token' );
+        register_setting( 'alw_settings_group', 'alw_admin_phone' );
 
         add_settings_section( 'alw_general_section', 'General Configuration', null, 'alw_settings' );
         add_settings_section( 'alw_rules_section', 'Shipping Rules', null, 'alw_settings' );
+        add_settings_section( 'alw_whatsapp_section', 'WhatsApp Cloud API Integrations', null, 'alw_settings' );
 
         add_settings_field( 'alw_google_api_key', 'Google Maps API Key', array( $this, 'render_api_key_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_google_api_key' ) );
         add_settings_field( 'alw_store_lat', 'Store Latitude', array( $this, 'render_text_field' ), 'alw_settings', 'alw_general_section', array( 'id' => 'alw_store_lat' ) );
@@ -50,6 +55,11 @@ class ALW_Admin_Settings {
         add_settings_field( 'alw_max_km', 'Max Delivery Distance (km)', array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_max_km' ) );
         add_settings_field( 'alw_rate_per_km', 'Rate Per KM', array( $this, 'render_number_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_rate_per_km' ) );
         add_settings_field( 'alw_round_method', 'Rounding Method', array( $this, 'render_select_field' ), 'alw_settings', 'alw_rules_section', array( 'id' => 'alw_round_method' ) );
+
+        add_settings_field( 'alw_wa_enabled', 'Enable WhatsApp Notifications', array( $this, 'render_checkbox_field' ), 'alw_settings', 'alw_whatsapp_section', array( 'id' => 'alw_wa_enabled' ) );
+        add_settings_field( 'alw_wa_phone_id', 'Phone Number ID', array( $this, 'render_text_field' ), 'alw_settings', 'alw_whatsapp_section', array( 'id' => 'alw_wa_phone_id', 'desc' => 'From your Meta Developer App Dashboard.' ) );
+        add_settings_field( 'alw_wa_token', 'Permanent Access Token', array( $this, 'render_text_field' ), 'alw_settings', 'alw_whatsapp_section', array( 'id' => 'alw_wa_token', 'desc' => 'Your system-user access token.' ) );
+        add_settings_field( 'alw_admin_phone', 'Admin WhatsApp Number', array( $this, 'render_text_field' ), 'alw_settings', 'alw_whatsapp_section', array( 'id' => 'alw_admin_phone', 'desc' => 'Include country code without +, e.g., 919876543210' ) );
     }
 
     public function render_api_key_field( $args ) {
@@ -89,6 +99,11 @@ class ALW_Admin_Settings {
     public function render_number_field( $args ) {
         $option = get_option( $args['id'] );
         echo '<input type="number" step="0.01" name="' . esc_attr( $args['id'] ) . '" value="' . esc_attr( $option ) . '" class="small-text" />';
+    }
+
+    public function render_checkbox_field( $args ) {
+        $option = get_option( $args['id'] );
+        echo '<input type="checkbox" name="' . esc_attr( $args['id'] ) . '" value="1" ' . checked( 1, $option, false ) . ' />';
     }
 
     public function render_select_field( $args ) {
