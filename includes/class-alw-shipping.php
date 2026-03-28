@@ -17,6 +17,14 @@ class ALW_Shipping_Calculator {
         // Grab the distance calculated by the Frontend
         $cust_dist = isset( $_POST['billing_distance'] ) ? floatval( wp_unslash( $_POST['billing_distance'] ) ) : 0;
 
+        // Extract from serialized WooCommerce AJAX payload
+        if ( empty( $cust_lat ) && isset( $_POST['post_data'] ) ) {
+            parse_str( wp_unslash( $_POST['post_data'] ), $post_data );
+            $cust_lat  = isset( $post_data['billing_lat'] ) ? floatval( $post_data['billing_lat'] ) : 0;
+            $cust_lng  = isset( $post_data['billing_lng'] ) ? floatval( $post_data['billing_lng'] ) : 0;
+            $cust_dist = isset( $post_data['billing_distance'] ) ? floatval( $post_data['billing_distance'] ) : 0;
+        }
+
         // Fallback: Geocode if no coords provided
         if ( empty( $cust_lat ) || empty( $cust_lng ) ) {
             $billing_address = $this->get_posted_address( $package );

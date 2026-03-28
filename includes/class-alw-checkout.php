@@ -21,6 +21,12 @@ class ALW_Checkout_Manager {
 
         // 6. Embed Google Maps link in Order Emails
         add_action( 'woocommerce_email_order_meta', array( $this, 'add_map_link_to_email' ), 10, 4 );
+
+        // 7. Show Google Maps link in WooCommerce Admin Order Screen
+        add_action( 'woocommerce_admin_order_data_after_shipping_address', array( $this, 'show_map_link_in_admin_order' ) );
+
+        // 8. Show Google Maps link in Frontend "View Order" screen (My Account)
+        add_action( 'woocommerce_order_details_after_customer_address', array( $this, 'show_map_link_in_frontend_order' ), 10, 2 );
     }
 
     
@@ -83,6 +89,42 @@ class ALW_Checkout_Manager {
         } else {
             echo '<h2>Delivery Location</h2>';
             echo '<p><strong>Map Pin:</strong> <a href="' . $map_url . '" target="_blank">View exact delivery location on Google Maps &rarr;</a></p>';
+        }
+    }
+
+    public function show_map_link_in_admin_order( $order ) {
+        $lat = $order->get_meta( '_shipping_lat' );
+        $lng = $order->get_meta( '_shipping_lng' );
+
+        if ( ! empty( $lat ) && ! empty( $lng ) ) {
+            $map_url = esc_url( "https://maps.google.com/?q={$lat},{$lng}" );
+            echo '<p><strong>Delivery Map Pin:</strong><br>';
+            echo '<a href="' . $map_url . '" target="_blank" style="display:inline-block; margin-top:5px; text-decoration:none;"><span class="dashicons dashicons-location-alt" style="margin-top:2px;"></span> View on Google Maps</a></p>';
+        }
+    }
+
+    public function show_map_link_in_frontend_order( $type, $order ) {
+        // Output ONLY under the primary delivery/shipping address block if it exists
+        // Or if there's no shipping block, fallback to display under the billing block.
+        if ( ! is_a( $order, 'WC_Order' ) ) {
+            return;
+        }
+
+        // If 'shipping' is shown, don't show it under 'billing' to avoid duplicates
+        if ( $type === 'billing' && $order->has_shipping_address() ) {
+            return;
+        }
+
+        $lat = $order->get_meta( '_shipping_lat' );
+        $lng = $order->get_meta( '_shipping_lng' );
+
+        if ( ! empty( $lat ) && ! empty( $lng ) ) {
+            $map_url = esc_url( "https://maps.google.com/?q={$lat},{$lng}" );
+            echo '<div style="margin-top:20px; padding: 10px; background: rgba(0,0,0,0.03); border-radius: 4px; display: inline-block; width: 100%;">';
+            echo '<strong style="display:block; margin-bottom: 5px;">📍 Exact Delivery Pin:</strong>';
+            echo '<a href="' . $map_url . '" target="_blank" class="button" style="text-decoration:none; display: inline-flex; align-items: center; gap: 5px;">';
+            echo '<span class="dashicons dashicons-location-alt" style="margin-top:2px;"></span> View on Google Maps &rarr;</a>';
+            echo '</div>';
         }
     }
 }

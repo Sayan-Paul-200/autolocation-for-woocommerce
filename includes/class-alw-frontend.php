@@ -426,10 +426,24 @@ class ALW_Frontend_Scripts {
     }
   } 
 
+  function getOrInjectHiddenField(name) {
+    var field = document.querySelector('input[name="' + name + '"]');
+    if (field) return field;
+    
+    var form = document.querySelector('form.checkout');
+    if (!form) return null;
+    
+    field = document.createElement('input');
+    field.type = 'hidden';
+    field.name = name;
+    form.appendChild(field);
+    return field;
+  }
+
   function setHiddenLatLng(lat, lng, dist){
-    var latField = document.querySelector('input[name="billing_lat"]');
-    var lngField = document.querySelector('input[name="billing_lng"]');
-    var distField = document.querySelector('input[name="billing_distance"]'); // Sync Field
+    var latField = getOrInjectHiddenField('billing_lat');
+    var lngField = getOrInjectHiddenField('billing_lng');
+    var distField = getOrInjectHiddenField('billing_distance');
     
     if (latField) latField.value = lat;
     if (lngField) lngField.value = lng;
